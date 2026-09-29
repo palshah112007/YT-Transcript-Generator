@@ -1,3 +1,10 @@
+// Vercel serverless function: proxies transcript requests to the Apify actor.
+// Shared logic lives in lib/apify.js so local `npm run dev` (Vite middleware)
+// behaves exactly the same as production.
+import { fetchTranscriptFromApify } from '../lib/apify.js';
+
+export const maxDuration = 60;
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.status(405).json({ message: 'Method not allowed' });
@@ -12,53 +19,19 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { url, language = 'en' } = body || {};
-  const token = process.env.APIFY_TOKEN;
-  const actorId = process.env.APIFY_ACTOR_ID || 'starvibe/youtube-video-transcript';
+  const result = await fetchTranscriptFromApify({
+    url: body?.url,
+    language: body?.language,
+    token: process.env.APIFY_TOKEN,
+    actorId: process.env.APIFY_ACTOR_ID,
+  });
 
-  if (!token) {
-    res.status(500).json({ message: 'Apify token is not configured.' });
+  if (!result.ok) {
+    const payload = { message: result.message };
+    if (result.details) payload.details = result.details;
+    res.status(result.status).json(payload);
     return;
   }
 
-  if (!url) {
-    res.status(400).json({ message: 'Missing YouTube URL.' });
-    return;
-  }
-
-  const runUrl = `https://api.apify.com/v2/acts/${encodeURIComponent(actorId)}/runs?token=${encodeURIComponent(token)}&waitForFinish=1&timeout=120000`;
-
-  try {
-    const startResponse = await fetch(runUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ youtube_url: url, language, include_transcript_text: true }),
-    });
-
-    if (!startResponse.ok) {
-      const errorPayload = await startResponse.text();
-      res.status(502).json({ message: 'Apify actor request failed.', details: errorPayload });
-      return;
-    }
-
-    const runData = await startResponse.json();
-    const datasetId = runData.defaultDatasetId;
-
-    if (!datasetId) {
-      res.status(502).json({ message: 'No dataset available from Apify run.' });
-      return;
-    }
-
-    const dataResponse = await fetch(`https://api.apify.com/v2/datasets/${datasetId}/items?clean=1&format=json&token=${encodeURIComponent(token)}`);
-    if (!dataResponse.ok) {
-      const errorPayload = await dataResponse.text();
-      res.status(502).json({ message: 'Unable to fetch Apify dataset items.', details: errorPayload });
-      return;
-    }
-
-    const items = await dataResponse.json();
-    res.status(200).json(items);
-  } catch (error) {
-    res.status(500).json({ message: error.message ?? 'Unexpected error' });
-  }
+  res.status(200).json(result.items);
 }

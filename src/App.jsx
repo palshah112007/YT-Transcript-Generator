@@ -13,6 +13,10 @@ function formatRelativeDate(date) {
 function parseYoutubeUrl(value) {
   if (!value) return null;
   const trimmed = value.trim();
+  // Support a bare 11-character video ID.
+  if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
+    return `https://www.youtube.com/watch?v=${trimmed}`;
+  }
   const withProtocol = trimmed.match(/^https?:\/\//i) ? trimmed : `https://${trimmed}`;
   try {
     const url = new URL(withProtocol);
@@ -45,11 +49,15 @@ function transcriptTextFromItem(item) {
   if (Array.isArray(item.transcript)) {
     return item.transcript.map((segment) => segment.text).join(' ');
   }
+  if (Array.isArray(item.transcriptText)) {
+    return item.transcriptText.map((segment) => segment.text).join(' ');
+  }
+  if (typeof item.transcriptText === 'string') return item.transcriptText;
   if (Array.isArray(item.searchResult)) {
     return item.searchResult.map((segment) => segment.text).join(' ');
   }
   if (typeof item.text === 'string') return item.text;
-  return JSON.stringify(item, null, 2);
+  return '';
 }
 
 function formatTranscriptWithTimestamps(item) {
@@ -115,7 +123,7 @@ export default function App() {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        loadHistory();
+        loadHistory(session.user.id);
       }
     });
 
@@ -123,18 +131,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (user) loadHistory();
+    if (user) loadHistory(user.id);
   }, [user]);
 
-  async function loadHistory() {
+  async function loadHistory(userId) {
+    if (!userId) return;
     const { data, error } = await supabase
       .from('yt_transcripts')
       .select('id, youtube_url, title, transcript_text, created_at, language')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .order('created_at', { ascending: false })
       .limit(20);
     if (error) {
-      console.error(error);
+      console.error('History load failed:', error.message);
       return;
     }
     setHistory(data ?? []);
@@ -208,17 +217,19 @@ export default function App() {
         body: JSON.stringify({ url, language }),
       });
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || 'Apify request failed');
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || `Request failed (${response.status})`);
       }
       const payload = await response.json();
       const item = Array.isArray(payload) ? payload[0] : payload?.[0] ?? payload;
       const transcriptText = transcriptTextFromItem(item);
       if (!transcriptText) {
-        throw new Error('No transcript was returned by the scraper.');
+        throw new Error(
+          'No transcript found for this video. It may have captions disabled or be unavailable.'
+        );
       }
       const title = item.title || 'YouTube Transcript';
-      await supabase.from('yt_transcripts').insert([
+      const { error: insertError } = await supabase.from('yt_transcripts').insert([
         {
           user_id: user.id,
           youtube_url: url,
@@ -229,7 +240,11 @@ export default function App() {
           credits_used: 1,
         },
       ]);
-      await loadHistory();
+      if (insertError) {
+        console.error('History save failed:', insertError.message);
+        setStatus('Transcript generated, but saving to history failed.');
+      }
+      await loadHistory(user.id);
       setTranscript({ title, text: transcriptText, url, item });
       setStatus('Transcript generated successfully. Copy, edit, or share it now.');
     } catch (error) {
