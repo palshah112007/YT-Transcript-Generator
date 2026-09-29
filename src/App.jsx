@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { supabase } from './lib/supabaseClient.js';
+import { supabase, isSupabaseConfigured } from './lib/supabaseClient.js';
 
 const OFFER_DURATION_DAYS = 7;
 
@@ -64,7 +64,7 @@ function formatTranscriptWithTimestamps(item) {
   if (!item) return '';
   if (Array.isArray(item.transcript)) {
     return item.transcript.map((segment) => {
-      const start = segment.start || segment.start_time || 0;
+      const start = Number(segment.start ?? segment.start_time ?? 0) || 0;
       const minutes = Math.floor(start / 60);
       const seconds = Math.floor(start % 60);
       const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
@@ -110,6 +110,8 @@ export default function App() {
   const trialCountdown = trial ? formatRelativeDate(trial.expires) : '7d 0h';
 
   useEffect(() => {
+    if (!isSupabaseConfigured) return;
+
     async function initSession() {
       const {
         data: { session },
@@ -135,7 +137,7 @@ export default function App() {
   }, [user]);
 
   async function loadHistory(userId) {
-    if (!userId) return;
+    if (!userId || !supabase) return;
     const { data, error } = await supabase
       .from('yt_transcripts')
       .select('id, youtube_url, title, transcript_text, created_at, language')
@@ -151,7 +153,7 @@ export default function App() {
   }
 
   async function updateTrialMetadataIfNeeded() {
-    if (!user) return;
+    if (!user || !supabase) return;
     if (user.user_metadata?.trialStart) return;
     await supabase.auth.updateUser({ data: { trialStart: new Date().toISOString() } });
     const { data: updatedSession } = await supabase.auth.getSession();
@@ -159,6 +161,10 @@ export default function App() {
   }
 
   async function handleSignup() {
+    if (!supabase) {
+      setStatus('Signup is unavailable: Supabase is not configured.');
+      return;
+    }
     setLoading(true);
     setStatus('Creating your account...');
     const { error } = await supabase.auth.signUp({ email, password }, { data: { trialStart: new Date().toISOString() } });
@@ -173,6 +179,10 @@ export default function App() {
   }
 
   async function handleLogin() {
+    if (!supabase) {
+      setStatus('Login is unavailable: Supabase is not configured.');
+      return;
+    }
     setLoading(true);
     setStatus('Signing you in...');
     const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -188,7 +198,7 @@ export default function App() {
   }
 
   async function handleSignOut() {
-    await supabase.auth.signOut();
+    if (supabase) await supabase.auth.signOut();
     setUser(null);
     setSession(null);
     setTranscript(null);
@@ -201,7 +211,7 @@ export default function App() {
       setStatus('Enter a valid YouTube URL, ID, or shared link.');
       return;
     }
-    if (!user) {
+    if (!user && isSupabaseConfigured) {
       setShowLoginPrompt(true);
       setStatus('Your first generation is free, but you need to log in first.');
       return;
@@ -229,6 +239,11 @@ export default function App() {
         );
       }
       const title = item.title || 'YouTube Transcript';
+      if (!supabase) {
+        setTranscript({ title, text: transcriptText, url, item });
+        setStatus('Transcript generated (guest mode — history needs Supabase login).');
+        return;
+      }
       const { error: insertError } = await supabase.from('yt_transcripts').insert([
         {
           user_id: user.id,

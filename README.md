@@ -1,13 +1,12 @@
 # YouTube Transcript Generator
 
-A Gen Z–style React one-page app with Supabase auth, transcript history, and Apify integration.
+A Gen Z–style React one-page app with Supabase auth (optional), transcript history, and a free built-in transcript engine.
 
 ## Features
 - React frontend built with Vite
-- Supabase Authentication and Postgres history
-- Apify YouTube transcript actor proxy via serverless function
-- .env variables for secrets
-- Vercel-ready deploy structure
+- **Works out of the box**: free YouTube captions engine — no API keys needed
+- Optional Apify actor fallback (only if `APIFY_TOKEN` is set)
+- Optional Supabase auth + Postgres history (app runs in guest mode without it)
 - Transcript timestamps toggle
 - Download transcripts as .txt files
 - Credits counter and usage tracking
@@ -15,20 +14,14 @@ A Gen Z–style React one-page app with Supabase auth, transcript history, and A
 - Clickable transcript history
 
 ## Setup
-1. Copy `.env.example` to `.env`.
-2. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
-3. Set `APIFY_TOKEN` and optionally `APIFY_ACTOR_ID`.
-   - Default Apify actor: `starvibe/youtube-video-transcript`
-4. Install dependencies:
+1. (Optional) Copy `.env.example` to `.env`.
+2. Transcript generation works with **zero configuration** — just run:
    ```bash
    npm install
-   ```
-5. Run locally:
-   ```bash
    npm run dev
    ```
-
-> Local dev now works fully: `npm run dev` serves the same Apify proxy at `/api/apify-proxy` via a Vite dev middleware (see `vite.config.js`), so transcript generation works without Vercel.
+3. Optional: set `APIFY_TOKEN` (and `APIFY_ACTOR_ID`) to enable the Apify fallback when the free engine is blocked.
+4. Optional: set `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` and run `supabase/init.sql` to enable login, history, and credits. Without these the app runs in guest mode.
 
 ## Supabase Setup (new project)
 1. Go to [supabase.com/dashboard](https://supabase.com/dashboard) → **New project**.

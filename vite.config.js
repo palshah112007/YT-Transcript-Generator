@@ -1,12 +1,13 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { fetchTranscriptFromApify } from './lib/apify.js';
+import { generateTranscript } from './lib/transcript.js';
 import { readEnvValue } from './lib/env.js';
 
 // Dev middleware so POST /api/apify-proxy works with `npm run dev`,
 // matching the Vercel serverless function (api/apify-proxy.js) in production.
-// Secrets are read per-request (lib/env.js) so editing .env hot-reloads —
-// no dev-server restart needed.
+// Secrets are read per-request (lib/env.js) so editing .env hot-reloads.
+// Transcript generation works without any token: the free captions engine
+// (lib/transcript.js) is primary; Apify is only an optional fallback.
 function apifyProxyDevPlugin() {
   return {
     name: 'apify-proxy-dev',
@@ -33,17 +34,20 @@ function apifyProxyDevPlugin() {
           return;
         }
 
-        const result = await fetchTranscriptFromApify({
+        const result = await generateTranscript({
           url: body?.url,
           language: body?.language,
-          token: readEnvValue('APIFY_TOKEN'),
-          actorId: readEnvValue('APIFY_ACTOR_ID'),
+          apifyToken: readEnvValue('APIFY_TOKEN'),
+          apifyActorId: readEnvValue('APIFY_ACTOR_ID'),
         });
 
-        const payload = result.ok
-          ? result.items
-          : { message: result.message, ...(result.details ? { details: result.details } : {}) };
-        reply(result.ok ? 200 : result.status, payload);
+        if (result.ok) {
+          reply(200, [result.item]);
+          return;
+        }
+        const payload = { message: result.message };
+        if (result.details) payload.details = result.details;
+        reply(502, payload);
       });
     },
   };
