@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { supabase, isSupabaseConfigured } from './lib/supabaseClient.js';
+import { supabase, isSupabaseConfigured, pingSupabase } from './lib/supabaseClient.js';
 
 const OFFER_DURATION_DAYS = 7;
 
@@ -87,6 +87,16 @@ function buildTrialMetadata(user) {
   return { start, expires };
 }
 
+// Turn raw Supabase/fetch failures into actionable messages instead of
+// failing silently (e.g. a paused/deleted project fails at DNS level).
+function describeAuthError(error) {
+  if (!error) return 'Something went wrong. Please try again.';
+  if (error.message === 'Failed to fetch' || /fetch failed|networkerror|load failed/i.test(error.message ?? '')) {
+    return 'Cannot reach Supabase — the project may be paused or deleted. Restore it at supabase.com/dashboard or update VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY in .env.';
+  }
+  return error.message;
+}
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [user, setUser] = useState(null);
@@ -94,6 +104,11 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [authMode, setAuthMode] = useState('login');
   const [showAuth, setShowAuth] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [dbStatus, setDbStatus] = useState(
+    isSupabaseConfigured ? 'checking' : 'unconfigured'
+  );
+  const [showRestoreGuide, setShowRestoreGuide] = useState(false);
   const [input, setInput] = useState('');
   const [language, setLanguage] = useState('en');
   const [status, setStatus] = useState('Paste a YouTube link or ID to start.');
@@ -136,6 +151,26 @@ export default function App() {
     if (user) loadHistory(user.id);
   }, [user]);
 
+  // Connection status indicator: probe Supabase on mount and on window focus.
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    let cancelled = false;
+    async function probe() {
+      const status = await pingSupabase();
+      if (cancelled) return;
+      setDbStatus(status);
+      if (status === 'offline') setShowRestoreGuide(true);
+    }
+    probe();
+    window.addEventListener('focus', probe);
+    const interval = setInterval(probe, 60000);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', probe);
+      clearInterval(interval);
+    };
+  }, []);
+
   async function loadHistory(userId) {
     if (!userId || !supabase) return;
     const { data, error } = await supabase
@@ -166,10 +201,13 @@ export default function App() {
       return;
     }
     setLoading(true);
+    setAuthError('');
     setStatus('Creating your account...');
     const { error } = await supabase.auth.signUp({ email, password }, { data: { trialStart: new Date().toISOString() } });
     if (error) {
-      setStatus(error.message);
+      const message = describeAuthError(error);
+      setStatus(message);
+      setAuthError(message);
       setLoading(false);
       return;
     }
@@ -184,10 +222,13 @@ export default function App() {
       return;
     }
     setLoading(true);
+    setAuthError('');
     setStatus('Signing you in...');
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) {
-      setStatus(error.message);
+      const message = describeAuthError(error);
+      setStatus(message);
+      setAuthError(message);
       setLoading(false);
       return;
     }
@@ -310,6 +351,21 @@ export default function App() {
           <span>Gen Z YouTube transcript studio</span>
         </div>
         <div className="top-actions">
+          <span
+            className={`db-status db-${dbStatus}`}
+            role={dbStatus === 'offline' ? 'button' : undefined}
+            onClick={dbStatus === 'offline' ? () => setShowRestoreGuide(true) : undefined}
+            title={
+              dbStatus === 'online' ? 'Supabase connected' :
+              dbStatus === 'offline' ? 'Supabase unreachable — click for restore guide' :
+              dbStatus === 'checking' ? 'Checking Supabase connection...' :
+              'Supabase not configured — guest mode'
+            }>
+            <span className="db-dot" />
+            {dbStatus === 'online' ? 'Supabase: Online' :
+             dbStatus === 'offline' ? 'Supabase: Offline' :
+             dbStatus === 'checking' ? 'Supabase: Checking' : 'Supabase: Not set up'}
+          </span>
           <span className="promo-chip">7-day unlimited launch offer</span>
           {user ? (
             <>
@@ -321,7 +377,10 @@ export default function App() {
               </button>
             </>
           ) : (
-            <button className="primary-btn" onClick={() => setShowAuth(true)}>
+            <button className="primary-btn" onClick={() => {
+              setAuthError('');
+              setShowAuth(true);
+            }}>
               Login / Signup
             </button>
           )}
@@ -501,7 +560,10 @@ export default function App() {
                 <p className="eyebrow">{authMode === 'login' ? 'Welcome back' : 'Create your account'}</p>
                 <h2>{authMode === 'login' ? 'Sign in' : 'Sign up'}</h2>
               </div>
-              <button className="ghost-btn" onClick={() => setShowAuth(false)}>
+              <button className="ghost-btn" onClick={() => {
+                setAuthError('');
+                setShowAuth(false);
+              }}>
                 Close
               </button>
             </div>
@@ -514,13 +576,61 @@ export default function App() {
               <span>Password</span>
               <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter a strong password" />
             </label>
-            <button className="primary-btn" onClick={authMode === 'login' ? handleLogin : handleSignup} disabled={loading}>
+            <button className="primary-btn" onClick={authMode === 'login' ? handleLogin : handleSignup} disabled={loading || (authMode === 'login' && !isSupabaseConfigured)}>
               {authMode === 'login' ? 'Login' : 'Create account'}
             </button>
-            <button className="secondary-btn" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}>
+            <button className="secondary-btn" onClick={() => {
+              setAuthError('');
+              setAuthMode(authMode === 'login' ? 'signup' : 'login');
+            }}>
               {authMode === 'login' ? 'Need an account? Sign up' : 'Already have an account? Log in'}
             </button>
+            {authError ? <p className="auth-error" role="alert">{authError}</p> : null}
             <p className="small-text">Your credentials are stored securely in Supabase.</p>
+          </div>
+        </div>
+      ) : null}
+
+      {showRestoreGuide ? (
+        <div className="modal-overlay">
+          <div className="modal-card">
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">Connection problem</p>
+                <h2>Restore your Supabase project</h2>
+              </div>
+              <button className="ghost-btn" onClick={() => setShowRestoreGuide(false)}>
+                Close
+              </button>
+            </div>
+            <p className="hero-copy">
+              The app cannot reach your Supabase project. Free projects pause after about a week of
+              inactivity and are deleted after roughly 90 days. Login, history, and credits need it —
+              transcript generation still works without it.
+            </p>
+            <ol className="guide-list">
+              <li>
+                Open the{' '}
+                <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer">
+                  Supabase dashboard
+                </a>{' '}
+                and find your project.
+              </li>
+              <li>
+                If it shows <strong>Restore</strong>, click it — the project is back in a few minutes.
+              </li>
+              <li>
+                If it was deleted, create a new project and copy the new <strong>Project URL</strong> and{' '}
+                <strong>anon key</strong> from Settings → API into your <code>.env</code> file.
+              </li>
+              <li>
+                Run <code>supabase/init.sql</code> in the SQL Editor (idempotent — safe to re-run).
+              </li>
+              <li>
+                Restart the dev server — this indicator turns green automatically once the project is
+                reachable.
+              </li>
+            </ol>
           </div>
         </div>
       ) : null}

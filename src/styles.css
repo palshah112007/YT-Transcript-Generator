@@ -76,6 +76,90 @@ button {
   font-size: 0.9rem;
 }
 
+.db-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  font-size: 0.9rem;
+}
+
+.db-offline[role="button"] {
+  cursor: pointer;
+}
+
+.guide-list {
+  margin: 14px 0 0;
+  padding-left: 22px;
+  display: grid;
+  gap: 10px;
+  color: #c3cde8;
+  line-height: 1.5;
+}
+
+.guide-list a {
+  color: #8ab4ff;
+}
+
+.guide-list code {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 0.85em;
+}
+
+.db-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.db-online {
+  background: rgba(34, 197, 94, 0.12);
+  color: #86efac;
+}
+
+.db-online .db-dot {
+  background: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.8);
+}
+
+.db-offline {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+}
+
+.db-offline .db-dot {
+  background: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.8);
+}
+
+.db-checking {
+  background: rgba(250, 204, 21, 0.1);
+  color: #fde047;
+}
+
+.db-checking .db-dot {
+  background: #facc15;
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+.db-unconfigured {
+  background: rgba(255, 255, 255, 0.06);
+  color: #9fb2d9;
+}
+
+.db-unconfigured .db-dot {
+  background: #64748b;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 .primary-btn,
 .secondary-btn,
 .ghost-btn,
@@ -261,10 +345,21 @@ textarea:focus {
 
 .alert-card {
   margin-bottom: 18px;
-  padding: 18px 20px;
+  padding: 18px 20px 18px 20px;
   border-radius: 18px;
   background: rgba(51, 58, 90, 0.9);
   border: 1px solid rgba(112, 130, 255, 0.12);
+}
+
+.auth-error {
+  margin: 6px 0 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  color: #ffb4b4;
+  background: rgba(255, 99, 99, 0.12);
+  border: 1px solid rgba(255, 99, 99, 0.35);
+  word-break: break-word;
 }
 
 .generate-btn {

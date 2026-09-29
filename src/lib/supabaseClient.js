@@ -12,3 +12,19 @@ export const isSupabaseConfigured = Boolean(
 export const supabase = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey)
   : null;
+
+// Lightweight reachability probe for the status indicator on the main page.
+// Hits the auth health endpoint directly (works even when the project is
+// paused/deleted — the fetch itself fails, which is exactly what we detect).
+export async function pingSupabase(timeoutMs = 8000) {
+  if (!isSupabaseConfigured) return 'unconfigured';
+  try {
+    const response = await fetch(`${supabaseUrl}/auth/v1/health`, {
+      headers: { apikey: supabaseAnonKey },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return response.ok ? 'online' : 'offline';
+  } catch {
+    return 'offline';
+  }
+}
