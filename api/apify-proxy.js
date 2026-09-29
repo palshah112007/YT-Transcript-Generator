@@ -1,7 +1,8 @@
-// Vercel serverless function: proxies transcript requests to the Apify actor.
-// Shared logic lives in lib/apify.js so local `npm run dev` (Vite middleware)
-// behaves exactly the same as production.
-import { fetchTranscriptFromApify } from '../lib/apify.js';
+// Vercel serverless function: returns transcripts for YouTube URLs.
+// Primary engine is free (YouTube captions, no credentials). Apify is an
+// optional fallback enabled by setting APIFY_TOKEN. Shared logic lives in
+// lib/transcript.js so local `npm run dev` (Vite middleware) matches prod.
+import { generateTranscript } from '../lib/transcript.js';
 
 export const maxDuration = 60;
 
@@ -19,19 +20,18 @@ export default async function handler(req, res) {
     return;
   }
 
-  const result = await fetchTranscriptFromApify({
+  const result = await generateTranscript({
     url: body?.url,
     language: body?.language,
-    token: process.env.APIFY_TOKEN,
-    actorId: process.env.APIFY_ACTOR_ID,
+    apifyToken: process.env.APIFY_TOKEN,
+    apifyActorId: process.env.APIFY_ACTOR_ID,
   });
 
-  if (!result.ok) {
-    const payload = { message: result.message };
-    if (result.details) payload.details = result.details;
-    res.status(result.status).json(payload);
+  if (result.ok) {
+    res.status(200).json([result.item]);
     return;
   }
-
-  res.status(200).json(result.items);
+  const payload = { message: result.message };
+  if (result.details) payload.details = result.details;
+  res.status(502).json(payload);
 }
