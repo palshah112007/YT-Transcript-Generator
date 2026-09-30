@@ -1,58 +1,35 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { generateTranscript } from './lib/transcript.js';
+import { handleTranscriptRequest } from './lib/proxy-handler.js';
 import { readEnvValue } from './lib/env.js';
 
 // Dev middleware so POST /api/apify-proxy works with `npm run dev`,
 // matching the Vercel serverless function (api/apify-proxy.js) in production.
-// Secrets are read per-request (lib/env.js) so editing .env hot-reloads.
-// Transcript generation works without any token: the free captions engine
-// (lib/transcript.js) is primary; Apify is only an optional fallback.
+// All request logic (bearer-token auth, URL validation, status codes,
+// timeout) lives in lib/proxy-handler.js — shared, not duplicated.
+// Secrets are read per-request (lib/env.js) so editing .env hot-reloads and
+// are only used server-side; nothing is ever sent back to the client.
 function apifyProxyDevPlugin() {
   return {
     name: 'apify-proxy-dev',
     configureServer(server) {
-      server.middlewares.use('/api/apify-proxy', async (req, res) => {
-        const reply = (status, payload) => {
-          res.statusCode = status;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify(payload));
-        };
-
-        if (req.method !== 'POST') {
-          reply(405, { message: 'Method not allowed' });
-          return;
-        }
-
-        let body;
-        try {
-          const chunks = [];
-          for await (const chunk of req) chunks.push(chunk);
-          body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-        } catch (error) {
-          reply(400, { message: 'Invalid JSON body.' });
-          return;
-        }
-
-        const result = await generateTranscript({
-          url: body?.url,
-          language: body?.language,
-          apifyToken: readEnvValue('APIFY_TOKEN'),
-          apifyActorId: readEnvValue('APIFY_ACTOR_ID'),
-        });
-
-        if (result.ok) {
-          reply(200, [result.item]);
-          return;
-        }
-        const payload = { message: result.message };
-        if (result.details) payload.details = result.details;
-        reply(502, payload);
-      });
+      server.middlewares.use('/api/apify-proxy', (req, res) =>
+        handleTranscriptRequest(req, res, {
+          getEnv: (name) => readEnvValue(name),
+        })
+      );
     },
   };
 }
 
 export default defineConfig({
   plugins: [react(), apifyProxyDevPlugin()],
+  // Vitest configuration (npm test). jsdom for component tests; the dev
+  // middleware plugin above is a no-op under test.
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: ['./tests/setup.js'],
+    include: ['tests/**/*.{test,spec}.{js,jsx}'],
+  },
 });

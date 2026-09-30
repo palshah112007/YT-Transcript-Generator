@@ -351,6 +351,22 @@ textarea:focus {
   border: 1px solid rgba(112, 130, 255, 0.12);
 }
 
+.env-warning {
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #ffdf9e;
+  background: rgba(255, 183, 77, 0.12);
+  border: 1px solid rgba(255, 183, 77, 0.35);
+  word-break: break-word;
+}
+
+.env-warning code {
+  color: inherit;
+}
+
 .auth-error {
   margin: 6px 0 0;
   padding: 12px 14px;

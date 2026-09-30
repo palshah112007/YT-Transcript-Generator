@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { supabase, isSupabaseConfigured, pingSupabase } from './lib/supabaseClient.js';
+import { supabase, isSupabaseConfigured, missingSupabaseEnvVars, pingSupabase } from './lib/supabaseClient.js';
 
 const OFFER_DURATION_DAYS = 7;
 
@@ -10,7 +10,9 @@ function formatRelativeDate(date) {
   return `${days}d ${hours}h`;
 }
 
-function parseYoutubeUrl(value) {
+// Pure helpers are exported for unit tests; exporting them has no effect on
+// app behavior.
+export function parseYoutubeUrl(value) {
   if (!value) return null;
   const trimmed = value.trim();
   // Support a bare 11-character video ID.
@@ -43,7 +45,7 @@ function parseYoutubeUrl(value) {
   return null;
 }
 
-function transcriptTextFromItem(item) {
+export function transcriptTextFromItem(item) {
   if (!item) return '';
   if (item.transcript_text) return item.transcript_text;
   if (Array.isArray(item.transcript)) {
@@ -60,7 +62,7 @@ function transcriptTextFromItem(item) {
   return '';
 }
 
-function formatTranscriptWithTimestamps(item) {
+export function formatTranscriptWithTimestamps(item) {
   if (!item) return '';
   if (Array.isArray(item.transcript)) {
     return item.transcript.map((segment) => {
@@ -74,7 +76,7 @@ function formatTranscriptWithTimestamps(item) {
   return transcriptTextFromItem(item);
 }
 
-function formatTimestamp(seconds) {
+export function formatTimestamp(seconds) {
   const minutes = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${minutes}:${secs.toString().padStart(2, '0')}`;
@@ -95,6 +97,75 @@ function describeAuthError(error) {
     return 'Cannot reach Supabase — the project may be paused or deleted. Restore it at supabase.com/dashboard or update VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY in .env.';
   }
   return error.message;
+}
+
+// Client-side signup validation. Runs before any network call so obvious
+// mistakes never hit Supabase. Returns '' when the fields are valid.
+const SIGNUP_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function validateSignupFields(emailValue, passwordValue) {
+  if (!SIGNUP_EMAIL_PATTERN.test(emailValue.trim())) {
+    return 'Enter a valid email address (e.g. you@example.com).';
+  }
+  if (passwordValue.length < 6) {
+    return 'Password must be at least 6 characters.';
+  }
+  return '';
+}
+
+// Map Supabase signup failures to friendly messages. Raw error.message is
+// never shown to the user. Checks the structured error code first, then the
+// message text as a fallback for older auth server responses.
+export function mapSignupError(error) {
+  const code = error?.code ?? '';
+  const raw = error?.message ?? '';
+  if (code === 'user_already_exists' || /already registered|already exists/i.test(raw)) {
+    return 'An account with this email already exists. Try logging in instead.';
+  }
+  if (code === 'weak_password' || /at least \d+ characters|weak password/i.test(raw)) {
+    return 'Password is too weak. Please use at least 6 characters.';
+  }
+  if (
+    code === 'validation_failed' ||
+    /invalid email|unable to validate email|email.*invalid format/i.test(raw)
+  ) {
+    return 'That email address looks invalid. Please check it and try again.';
+  }
+  if (raw === 'Failed to fetch' || /fetch failed|networkerror|load failed/i.test(raw)) {
+    return 'Cannot reach the signup service. Check your internet connection — the Supabase project may also be paused (restore it at supabase.com/dashboard).';
+  }
+  return 'Signup failed. Please try again in a moment.';
+}
+
+// Map Supabase login failures to friendly messages. "Invalid login
+// credentials" and "Email not confirmed" need distinct guidance, and the raw
+// error.message is never shown to the user.
+export function mapLoginError(error) {
+  const code = error?.code ?? '';
+  const raw = error?.message ?? '';
+  if (code === 'invalid_credentials' || /invalid login credentials/i.test(raw)) {
+    return 'Incorrect email or password. Please try again.';
+  }
+  if (code === 'email_not_confirmed' || /email not confirmed/i.test(raw)) {
+    return 'Please confirm your email first — check your inbox for the confirmation link.';
+  }
+  if (raw === 'Failed to fetch' || /fetch failed|networkerror|load failed/i.test(raw)) {
+    return describeAuthError(error);
+  }
+  return 'Login failed. Please try again in a moment.';
+}
+
+// Map password-reset email failures. Only invalid-email and network issues
+// are realistically reachable; raw messages stay in the console, not the UI.
+function mapResetPasswordError(error) {
+  const raw = error?.message ?? '';
+  if (raw === 'Failed to fetch' || /fetch failed|networkerror|load failed/i.test(raw)) {
+    return 'Cannot reach Supabase — check your internet connection. The project may also be paused (restore it at supabase.com/dashboard).';
+  }
+  if (/invalid|validation/i.test(raw)) {
+    return 'That email address looks invalid. Please check it and try again.';
+  }
+  return 'Could not send the reset email. Please try again in a moment.';
 }
 
 export default function App() {
@@ -128,11 +199,21 @@ export default function App() {
     if (!isSupabaseConfigured) return;
 
     async function initSession() {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      setSession(session);
-      setUser(session?.user ?? null);
+      try {
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession();
+        if (error) {
+          console.error('Session restore failed:', error.message);
+        }
+        setSession(session ?? null);
+        setUser(session?.user ?? null);
+      } catch (error) {
+        // Never leave an unhandled rejection on startup (e.g. corrupt cached
+        // session); the app just renders logged out.
+        console.error('Session restore failed:', error?.message ?? error);
+      }
     }
 
     initSession();
@@ -200,20 +281,46 @@ export default function App() {
       setStatus('Signup is unavailable: Supabase is not configured.');
       return;
     }
+    // Guard against double submit (button is also disabled while loading).
+    if (loading) return;
+
+    // Client-side validation before calling Supabase.
+    const validationError = validateSignupFields(email, password);
+    if (validationError) {
+      setStatus(validationError);
+      setAuthError(validationError);
+      return;
+    }
+
     setLoading(true);
     setAuthError('');
     setStatus('Creating your account...');
-    const { error } = await supabase.auth.signUp({ email, password }, { data: { trialStart: new Date().toISOString() } });
-    if (error) {
-      const message = describeAuthError(error);
-      setStatus(message);
-      setAuthError(message);
+    try {
+      const { data, error } = await supabase.auth.signUp(
+        { email: email.trim(), password },
+        { data: { trialStart: new Date().toISOString() } }
+      );
+      if (error) {
+        const message = mapSignupError(error);
+        setStatus(message);
+        setAuthError(message);
+        return;
+      }
+      if (!data?.session) {
+        // Email confirmation is ON: there is no session until the user
+        // clicks the link in the email. Do NOT mark the user as logged in.
+        setStatus('Check your email to confirm your account, then log in.');
+        setAuthError('');
+        setAuthMode('login');
+        return;
+      }
+      // Email confirmation is OFF: signUp returned a session, so the user is
+      // already logged in — onAuthStateChange picks up the session.
+      setStatus('Account created. You are logged in.');
+      setShowAuth(false);
+    } finally {
       setLoading(false);
-      return;
     }
-    setStatus('Signup successful! Check your email to verify, then log in.');
-    setAuthMode('login');
-    setLoading(false);
   }
 
   async function handleLogin() {
@@ -221,29 +328,73 @@ export default function App() {
       setStatus('Login is unavailable: Supabase is not configured.');
       return;
     }
+    if (loading) return;
     setLoading(true);
     setAuthError('');
     setStatus('Signing you in...');
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) {
-      const message = describeAuthError(error);
-      setStatus(message);
-      setAuthError(message);
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        const message = mapLoginError(error);
+        setStatus(message);
+        setAuthError(message);
+        return;
+      }
+      await updateTrialMetadataIfNeeded();
+      setStatus('Welcome back! Ready to generate transcripts.');
+      setShowAuth(false);
+    } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleForgotPassword() {
+    if (!supabase) {
+      setStatus('Password reset is unavailable: Supabase is not configured.');
       return;
     }
-    await updateTrialMetadataIfNeeded();
-    setStatus('Welcome back! Ready to generate transcripts.');
-    setLoading(false);
-    setShowAuth(false);
+    if (loading) return;
+    if (!SIGNUP_EMAIL_PATTERN.test(email.trim())) {
+      const message = 'Enter a valid email address (e.g. you@example.com).';
+      setStatus(message);
+      setAuthError(message);
+      return;
+    }
+    setLoading(true);
+    setAuthError('');
+    setStatus('Sending password reset email...');
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: `${window.location.origin}/`,
+      });
+      if (error) {
+        const message = mapResetPasswordError(error);
+        setStatus(message);
+        setAuthError(message);
+        return;
+      }
+      setStatus('Password reset email sent. Check your inbox for the link.');
+      setAuthMode('login');
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleSignOut() {
-    if (supabase) await supabase.auth.signOut();
+    if (supabase) {
+      try {
+        await supabase.auth.signOut();
+      } catch (error) {
+        console.error('Sign out failed:', error?.message ?? error);
+      }
+    }
+    // Clear all signed-in state (even if the server call failed) so the UI
+    // never shows stale history/credits from the previous account.
     setUser(null);
     setSession(null);
     setTranscript(null);
     setHistory([]);
+    setCreditsUsed(0);
   }
 
   async function handleGenerate() {
@@ -345,6 +496,16 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      {missingSupabaseEnvVars.length > 0 ? (
+        <div className="env-warning" role="alert">
+          <strong>Configuration problem:</strong> missing environment{' '}
+          variable{missingSupabaseEnvVars.length > 1 ? 's' : ''}{' '}
+          <code>{missingSupabaseEnvVars.join(', ')}</code>. Login, history, and
+          credits are disabled (transcripts still generate). Copy{' '}
+          <code>.env.example</code> to <code>.env</code>, fill in the values,
+          and restart the dev server.
+        </div>
+      ) : null}
       <header className="topbar">
         <div className="brand">
           <strong>TranscriptLab</strong>
@@ -557,8 +718,12 @@ export default function App() {
           <div className="modal-card">
             <div className="modal-header">
               <div>
-                <p className="eyebrow">{authMode === 'login' ? 'Welcome back' : 'Create your account'}</p>
-                <h2>{authMode === 'login' ? 'Sign in' : 'Sign up'}</h2>
+                <p className="eyebrow">
+                  {authMode === 'login' ? 'Welcome back' : authMode === 'signup' ? 'Create your account' : 'Reset password'}
+                </p>
+                <h2>
+                  {authMode === 'login' ? 'Sign in' : authMode === 'signup' ? 'Sign up' : 'Forgot password'}
+                </h2>
               </div>
               <button className="ghost-btn" onClick={() => {
                 setAuthError('');
@@ -572,19 +737,48 @@ export default function App() {
               <span>Email</span>
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
             </label>
-            <label className="input-group">
-              <span>Password</span>
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter a strong password" />
-            </label>
-            <button className="primary-btn" onClick={authMode === 'login' ? handleLogin : handleSignup} disabled={loading || (authMode === 'login' && !isSupabaseConfigured)}>
-              {authMode === 'login' ? 'Login' : 'Create account'}
+            {authMode !== 'forgot' ? (
+              <label className="input-group">
+                <span>Password</span>
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter a strong password" />
+              </label>
+            ) : null}
+            <button
+              className="primary-btn"
+              onClick={
+                authMode === 'login'
+                  ? handleLogin
+                  : authMode === 'signup'
+                    ? handleSignup
+                    : handleForgotPassword
+              }
+              disabled={loading || !isSupabaseConfigured}
+            >
+              {authMode === 'login' ? 'Login' : authMode === 'signup' ? 'Create account' : 'Send reset link'}
             </button>
-            <button className="secondary-btn" onClick={() => {
-              setAuthError('');
-              setAuthMode(authMode === 'login' ? 'signup' : 'login');
-            }}>
-              {authMode === 'login' ? 'Need an account? Sign up' : 'Already have an account? Log in'}
-            </button>
+            {authMode === 'login' ? (
+              <button className="ghost-btn" onClick={() => {
+                setAuthError('');
+                setAuthMode('forgot');
+              }}>
+                Forgot password?
+              </button>
+            ) : null}
+            {authMode !== 'forgot' ? (
+              <button className="secondary-btn" onClick={() => {
+                setAuthError('');
+                setAuthMode(authMode === 'login' ? 'signup' : 'login');
+              }}>
+                {authMode === 'login' ? 'Need an account? Sign up' : 'Already have an account? Log in'}
+              </button>
+            ) : (
+              <button className="secondary-btn" onClick={() => {
+                setAuthError('');
+                setAuthMode('login');
+              }}>
+                Back to log in
+              </button>
+            )}
             {authError ? <p className="auth-error" role="alert">{authError}</p> : null}
             <p className="small-text">Your credentials are stored securely in Supabase.</p>
           </div>
