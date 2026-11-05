@@ -12,6 +12,7 @@ import { ShortcutsModal } from './components/ShortcutsModal.jsx';
 import { ErrorBoundary } from './components/ErrorBoundary.jsx';
 
 const OFFER_DURATION_DAYS = 7;
+const WORDS_PER_MINUTE = 200;
 
 const LANG_NAMES = {
   en: 'English', hi: 'Hindi', es: 'Spanish', fr: 'French', de: 'German',
@@ -104,7 +105,7 @@ export function calculateTranscriptStats(text, item) {
   const clean = (text || '').trim();
   const wordCount = clean ? clean.split(/\s+/).filter(Boolean).length : 0;
   const charCount = clean.length;
-  const readingTimeMin = Math.max(1, Math.ceil(wordCount / 200));
+  const readingTimeMin = Math.max(1, Math.ceil(wordCount / WORDS_PER_MINUTE));
 
   let totalDurationSec = 0;
   const segments = Array.isArray(item?.transcript) ? item.transcript : null;
