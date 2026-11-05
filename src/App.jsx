@@ -36,18 +36,19 @@ export function extractVideoId(value) {
   const withProtocol = trimmed.match(/^https?:\/\//i) ? trimmed : `https://${trimmed}`;
   try {
     const url = new URL(withProtocol);
-    const hostname = url.hostname.replace(/^www\./, '');
-    if (hostname === 'youtu.be') {
-      const id = url.pathname.slice(1);
+    const host = url.hostname.replace(/^www\./, '').toLowerCase();
+    if (host === 'youtu.be') {
+      const id = url.pathname.replace(/^\/+|\/+$/g, '').split('/')[0];
       return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : null;
     }
-    if (hostname === 'youtube.com' || hostname === 'm.youtube.com') {
+    if (host === 'youtube.com' || host === 'm.youtube.com' || host === 'music.youtube.com') {
       if (url.searchParams.has('v')) {
         const id = url.searchParams.get('v') || '';
         return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : null;
       }
-      if (url.pathname.startsWith('/shorts/')) {
-        const id = url.pathname.split('/')[2] || '';
+      const parts = url.pathname.replace(/^\/+|\/+$/g, '').split('/');
+      if (['shorts', 'live', 'embed', 'v'].includes(parts[0]) && parts[1]) {
+        const id = parts[1];
         return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : null;
       }
     }
@@ -136,18 +137,20 @@ export function parseYoutubeUrl(value) {
   const withProtocol = trimmed.match(/^https?:\/\//i) ? trimmed : `https://${trimmed}`;
   try {
     const url = new URL(withProtocol);
-    const hostname = url.hostname.replace('www.', '');
-    if (hostname === 'youtu.be') {
-      const id = url.pathname.slice(1);
-      return id ? `https://www.youtube.com/watch?v=${id}` : null;
+    const host = url.hostname.replace(/^www\./, '').toLowerCase();
+    if (host === 'youtu.be') {
+      const id = url.pathname.replace(/^\/+|\/+$/g, '').split('/')[0];
+      return /^[a-zA-Z0-9_-]{11}$/.test(id) ? `https://www.youtube.com/watch?v=${id}` : null;
     }
-    if (hostname === 'youtube.com' || hostname === 'm.youtube.com') {
+    if (host === 'youtube.com' || host === 'm.youtube.com' || host === 'music.youtube.com') {
       if (url.searchParams.has('v')) {
-        return `https://www.youtube.com/watch?v=${url.searchParams.get('v')}`;
+        const id = url.searchParams.get('v');
+        return /^[a-zA-Z0-9_-]{11}$/.test(id) ? `https://www.youtube.com/watch?v=${id}` : null;
       }
-      if (url.pathname.startsWith('/shorts/')) {
-        const id = url.pathname.split('/')[2];
-        return id ? `https://www.youtube.com/watch?v=${id}` : null;
+      const parts = url.pathname.replace(/^\/+|\/+$/g, '').split('/');
+      if (['shorts', 'live', 'embed', 'v'].includes(parts[0]) && parts[1]) {
+        const id = parts[1];
+        return /^[a-zA-Z0-9_-]{11}$/.test(id) ? `https://www.youtube.com/watch?v=${id}` : null;
       }
       if (url.pathname.startsWith('/watch')) {
         return trimmed;
