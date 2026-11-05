@@ -138,6 +138,27 @@ To enable user accounts, multi-device synchronization, and cloud storage:
 
 ---
 
+## 🌐 Supported Translation Languages
+
+TranscriptLab natively supports translation between all major global languages:
+
+- 🇬🇧 English (`en`)
+- 🇮🇳 Hindi (`hi`)
+- 🇪🇸 Spanish (`es`)
+- 🇫🇷 French (`fr`)
+- 🇩🇪 German (`de`)
+- 🇯🇵 Japanese (`ja`)
+- 🇨🇳 Chinese (`zh`)
+- 🇸🇦 Arabic (`ar`)
+- 🇷🇺 Russian (`ru`)
+- 🇧🇷 Portuguese (`pt`)
+- 🇮🇹 Italian (`it`)
+- 🇰🇷 Korean (`ko`)
+- 🇳🇱 Dutch (`nl`)
+- 🇹🇷 Turkish (`tr`)
+
+---
+
 ## 📄 License
 
 MIT © [Pal Shah](https://github.com/palshah112007)
