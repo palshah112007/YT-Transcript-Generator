@@ -41,9 +41,15 @@ export function clearLocalHistory() {
   }
 }
 
+export function deleteLocalHistoryEntry(id) {
+  const items = readAll().filter((item) => item.id !== id);
+  writeAll(items);
+  return items;
+}
+
 export function makeLocalEntry({ url, title, transcriptText, language, item }) {
   return {
-    id: `local-${Date.now()}`,
+    id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
     user_id: null,
     youtube_url: url,
     title,

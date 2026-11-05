@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { handleTranscriptRequest } from './lib/proxy-handler.js';
+import { handleTranscriptRequest, handleTranslateRequest } from './lib/proxy-handler.js';
 import { readEnvValue } from './lib/env.js';
 
 // Dev middleware so POST /api/apify-proxy works with `npm run dev`,
@@ -17,6 +17,9 @@ function apifyProxyDevPlugin() {
         handleTranscriptRequest(req, res, {
           getEnv: (name) => readEnvValue(name),
         })
+      );
+      server.middlewares.use('/api/translate', (req, res) =>
+        handleTranslateRequest(req, res)
       );
     },
   };

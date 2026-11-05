@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  calculateTranscriptStats,
+  extractVideoId,
+  formatSrtTimestamp,
   formatTimestamp,
+  formatTranscriptAsSRT,
   formatTranscriptWithTimestamps,
   mapLoginError,
   mapSignupError,
@@ -8,6 +12,13 @@ import {
   transcriptTextFromItem,
   validateSignupFields,
 } from '../src/App.jsx';
+import {
+  clearLocalHistory,
+  deleteLocalHistoryEntry,
+  getLocalHistory,
+  makeLocalEntry,
+  saveLocalHistoryEntry,
+} from '../src/lib/localHistory.js';
 
 // --- parseYoutubeUrl ------------------------------------------------------
 
@@ -178,5 +189,120 @@ describe('formatTimestamp / formatTranscriptWithTimestamps', () => {
 
   it('falls back to plain text when no segments exist', () => {
     expect(formatTranscriptWithTimestamps({ transcript_text: 'plain' })).toBe('plain');
+  });
+});
+
+// --- extractVideoId --------------------------------------------------------
+
+describe('extractVideoId', () => {
+  it('extracts bare 11-char ID', () => {
+    expect(extractVideoId('dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ');
+  });
+
+  it('extracts from watch URL', () => {
+    expect(extractVideoId('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ');
+    expect(extractVideoId('youtube.com/watch?v=dQw4w9WgXcQ&t=10s')).toBe('dQw4w9WgXcQ');
+  });
+
+  it('extracts from youtu.be short link', () => {
+    expect(extractVideoId('https://youtu.be/dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ');
+  });
+
+  it('extracts from /shorts/ link', () => {
+    expect(extractVideoId('https://www.youtube.com/shorts/dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ');
+  });
+
+  it('returns null for invalid inputs', () => {
+    expect(extractVideoId('')).toBeNull();
+    expect(extractVideoId('invalid-id')).toBeNull();
+    expect(extractVideoId('https://example.com/watch?v=dQw4w9WgXcQ')).toBeNull();
+  });
+});
+
+// --- formatSrtTimestamp & formatTranscriptAsSRT ---------------------------
+
+describe('formatSrtTimestamp', () => {
+  it('formats zero seconds', () => {
+    expect(formatSrtTimestamp(0)).toBe('00:00:00,000');
+  });
+
+  it('formats seconds with milliseconds', () => {
+    expect(formatSrtTimestamp(62.5)).toBe('00:01:02,500');
+    expect(formatSrtTimestamp(3665.123)).toBe('01:01:05,123');
+  });
+});
+
+describe('formatTranscriptAsSRT', () => {
+  it('converts segments to SRT format with index and timing blocks', () => {
+    const srt = formatTranscriptAsSRT({ transcript: SEGMENTS });
+    expect(srt).toContain('1\n00:00:00,000 --> 00:01:02,000\nHello');
+    expect(srt).toContain('2\n00:01:02,000 --> 00:01:05,000\nworld');
+  });
+
+  it('falls back to single SRT block for raw text without segments', () => {
+    const srt = formatTranscriptAsSRT({ transcript_text: 'Fallback raw subtitle' });
+    expect(srt).toContain('1\n00:00:00,000 --> 00:00:05,000\nFallback raw subtitle');
+  });
+
+  it('returns empty string for null item', () => {
+    expect(formatTranscriptAsSRT(null)).toBe('');
+  });
+});
+
+// --- calculateTranscriptStats ---------------------------------------------
+
+describe('calculateTranscriptStats', () => {
+  it('calculates word count, char count, and estimated reading time', () => {
+    const text = 'This is a test transcript with eight words.';
+    const stats = calculateTranscriptStats(text, { transcript: SEGMENTS });
+    expect(stats.wordCount).toBe(8);
+    expect(stats.charCount).toBe(text.length);
+    expect(stats.readingTimeStr).toBe('1 min read');
+    expect(stats.durationStr).toBe('1:04');
+  });
+
+  it('handles empty text gracefully', () => {
+    const stats = calculateTranscriptStats('', null);
+    expect(stats.wordCount).toBe(0);
+    expect(stats.charCount).toBe(0);
+    expect(stats.readingTimeStr).toBe('1 min read');
+    expect(stats.durationStr).toBeNull();
+  });
+});
+
+// --- localHistory helpers -------------------------------------------------
+
+describe('localHistory module', () => {
+  it('saves, retrieves, and deletes local history entries', () => {
+    clearLocalHistory();
+    expect(getLocalHistory()).toEqual([]);
+
+    const entry1 = makeLocalEntry({
+      url: 'https://youtube.com/watch?v=dQw4w9WgXcQ',
+      title: 'Rick Astley',
+      transcriptText: 'Never gonna give you up',
+      language: 'en',
+    });
+    const entry2 = makeLocalEntry({
+      url: 'https://youtube.com/watch?v=abcdefghijk',
+      title: 'Another Video',
+      transcriptText: 'Second transcript',
+      language: 'es',
+    });
+
+    saveLocalHistoryEntry(entry1);
+    saveLocalHistoryEntry(entry2);
+
+    let history = getLocalHistory();
+    expect(history).toHaveLength(2);
+    expect(history[0].id).toBe(entry2.id); // unshifted to top
+
+    deleteLocalHistoryEntry(entry1.id);
+    history = getLocalHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0].id).toBe(entry2.id);
+
+    clearLocalHistory();
+    expect(getLocalHistory()).toEqual([]);
   });
 });

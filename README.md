@@ -1,102 +1,143 @@
-# YouTube Transcript Generator
+<div align="center">
 
-A Gen Z–style React one-page app with Supabase auth (optional), transcript history, and a free built-in transcript engine.
+# 🎬 TranscriptLab Studio
 
-## Features
-- React frontend built with Vite
-- **Works out of the box**: free YouTube captions engine — no API keys needed
-- Optional Apify actor fallback (only if `APIFY_TOKEN` is set)
-- Optional Supabase auth + Postgres history (app runs in guest mode without it)
-- Transcript timestamps toggle
-- Download transcripts as .txt files
-- Credits counter and usage tracking
-- Account settings modal
-- Clickable transcript history
-- Live Supabase connection status indicator with restore guide
+**Enterprise-Ready YouTube Video Transcription, Captioning & Multi-Language Studio**
 
-## Setup
-1. (Optional) Copy `.env.example` to `.env`.
-2. Transcript generation works with **zero configuration** — just run:
-   ```bash
-   npm install
-   npm run dev
-   ```
-3. Optional: set `APIFY_TOKEN` (and `APIFY_ACTOR_ID`) to enable the Apify fallback when the free engine is blocked.
-4. Optional: set `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` and run `supabase/init.sql` to enable login, history, and credits. Without these the app runs in guest mode.
+Extract clean, synchronized transcripts and subtitles from any YouTube URL or video ID in seconds with real-time translation into 14+ languages.
 
-## Supabase Setup (new project)
-1. Go to [supabase.com/dashboard](https://supabase.com/dashboard) → **New project**.
-2. Pick a name, a strong database password, and a region near you. Wait for provisioning.
-3. Open **Project Settings → API** and copy the **Project URL** and **anon public key**.
-4. Paste them into `.env` as `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
-5. Open **SQL Editor → New query**, paste all of `supabase/init.sql`, and run it. It is idempotent — safe to re-run.
-6. Optional check in SQL Editor:
-   ```sql
-   select * from pg_policies where tablename = 'yt_transcripts';
-   ```
-   You should see the two policies (insert + select, owner-only).
+🌐 **Live Demo:** [https://yt-transcript-generator.vercel.app](https://yt-transcript-generator.vercel.app)
 
-### Connection status indicator
+[![Production Build](https://img.shields.io/badge/Build-Passing-emerald?style=for-the-badge&logo=vite)](https://github.com/palshah112007/YT-Transcript-Generator)
+[![Tests Passing](https://img.shields.io/badge/Tests-60%2F60%20Passing-indigo?style=for-the-badge&logo=vitest)](https://github.com/palshah112007/YT-Transcript-Generator)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+[![PWA Ready](https://img.shields.io/badge/PWA-Installable-purple?style=for-the-badge&logo=pwa)](https://github.com/palshah112007/YT-Transcript-Generator)
 
-The topbar shows a live Supabase status pill:
+</div>
 
-| Status | Meaning |
+---
+
+## ⚡ What makes TranscriptLab a Product, not just a Project?
+
+TranscriptLab is built from the ground up to provide a frictionless, professional-grade user experience for content creators, researchers, journalists, and developers:
+
+- 🚀 **Zero Friction / 100% Free Guest Mode**: Transcribe immediately without mandatory logins or API keys.
+- 💾 **Dual-Tier Storage Architecture**:
+  - **Local-First Privacy**: Guest sessions persist automatically in browser `localStorage`.
+  - **Cloud Sync**: Logged-in users get encrypted PostgreSQL persistence with Supabase Row Level Security (RLS).
+- 🎞️ **Multi-Format Export Suite**:
+  - **`.txt`**: Plain text format with instant timestamp toggle `[MM:SS]`.
+  - **`.srt`**: SubRip subtitle format with millisecond precision, ready for Premiere Pro, DaVinci Resolve, Final Cut, CapCut, and YouTube Studio.
+  - **`.json`**: Structured JSON data with full segment metadata.
+- 📊 **Reading Analytics**: Live word counter, character count, video duration, and calculated reading time (`X min read`).
+- 🔍 **Instant Search-Within-Transcript**: Find keywords inside transcripts with match count highlights.
+- 🌓 **Dynamic Theme Engine**: Automatic dark/light theme switching with persistence.
+- ⌨ **Pro Keyboard Shortcuts**: Power-user navigation with `⌘K`, `⌘+Enter`, `⌘+Shift+C`, `Esc`, and `?`.
+- 🔔 **Animated Toast Notification System**: Real-time feedback for copy, export, and status events.
+- 🛡️ **Fault-Tolerant Dual-Engine Backend**:
+  1. Primary: High-speed, free built-in YouTube caption scraper.
+  2. Fallback: Authenticated Apify Actor proxy for enterprise resilience.
+- 📱 **Installable PWA**: Web manifest and SVG icon ready for desktop and mobile installation.
+
+---
+
+## ⌨ Keyboard Shortcuts Reference
+
+| Shortcut | Action |
 | --- | --- |
-| 🟢 `Supabase: Online` | Project reachable — login, history, credits active |
-| 🔴 `Supabase: Offline` | Project unreachable — likely paused or deleted; **click the pill for a restore guide** (also opens automatically) |
-| 🟡 `Supabase: Checking` | Probe in progress (on page load) |
-| ⚪ `Supabase: Not set up` | No `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` — guest mode |
+| `Ctrl / ⌘ + Enter` | Generate transcript from current URL or ID |
+| `Ctrl / ⌘ + K` | Focus URL / Video ID input |
+| `Ctrl / ⌘ + Shift + C` | Instant 1-click copy transcript |
+| `Ctrl / ⌘ + S` | Download transcript file |
+| `Esc` | Close active dialog / clear search |
+| `?` | Open keyboard shortcuts reference |
 
-The app probes `GET /auth/v1/health` on page load, on window focus, and every 60 seconds, so the pill turns green by itself once a paused project is restored.
+---
 
-Note: free projects pause after ~1 week of inactivity and are deleted after ~90 days. When a project is deleted, its URL/keys cannot be recovered — create a new project and update `.env`.
+## 🚀 Quick Start (Zero Configuration)
 
-### Testing the auth flow
-
-With credentials configured, verify the whole auth chain (reachability, auth service sanity, signup, login) without the browser:
+TranscriptLab runs immediately without configuring any external services:
 
 ```bash
-node scripts/test-auth.mjs
+# Clone the repository
+git clone https://github.com/palshah112007/YT-Transcript-Generator.git
+cd YT-Transcript-Generator
+
+# Install dependencies
+npm install
+
+# Start the Vite development server
+npm run dev
 ```
 
-The script creates a throwaway test account (`test-<timestamp>@example.com`) and prints a ✓/✗ report. If email confirmation is enabled (the Supabase default), login is expected to return `Email not confirmed` — that still counts as a pass since it proves the flow works end-to-end.
+Visit `http://localhost:5173` to start transcribing videos!
 
-## Supabase Database
-Create a table called `yt_transcripts` with this schema:
+---
 
-```sql
-create table if not exists yt_transcripts (
-  id bigint generated always as identity primary key,
-  user_id uuid not null,
-  youtube_url text not null,
-  title text,
-  transcript_text text,
-  language text,
-  metadata jsonb,
-  credits_used int default 1,
-  created_at timestamptz default now()
-);
+## 🛠️ Production Build & Verification
+
+```bash
+# Run unit and integration tests (60 tests)
+npm test
+
+# Build production bundle
+npm run build
+
+# Preview production build locally
+npm run preview
 ```
 
-Grant access to authenticated users using Supabase Row Level Security.
+---
 
-## Vercel Deploy
-- Deploy the project root to Vercel.
-- Add environment variables in Vercel dashboard:
-  - `VITE_SUPABASE_URL`
-  - `VITE_SUPABASE_ANON_KEY`
-  - `APIFY_TOKEN`
-  - `APIFY_ACTOR_ID`
-- Optional: install the Vercel CLI and run `vercel dev` for local serverless function testing.
+## 🌐 Supabase & Cloud Sync (Optional)
 
-The API proxy function is available at `/api/apify-proxy`.
+To enable user accounts, multi-device synchronization, and cloud storage:
 
-## Usage
-1. Check the Supabase status pill in the topbar (green = login available; red = click for the restore guide)
-2. Sign up or log in with Supabase auth
-3. Paste a YouTube URL or video ID
-4. Select language and generate transcript
-5. Toggle timestamps on/off in the result
-6. Copy or download the transcript
-7. View history by clicking saved items
-8. Check credits usage in account settings
+1. Create a project at [supabase.com](https://supabase.com).
+2. Copy `.env.example` to `.env`:
+   ```env
+   VITE_SUPABASE_URL=https://your-project.supabase.co
+   VITE_SUPABASE_ANON_KEY=your-anon-key
+   ```
+3. Run `supabase/init.sql` in your Supabase SQL Editor.
+4. Restart your dev server. The connection indicator will turn green: `Cloud: Online`.
+
+---
+
+## 📁 Architecture Overview
+
+```text
+├── api/
+│   ├── apify-proxy.js          # Vercel Serverless Function proxy (Captions)
+│   └── translate.js            # Vercel Serverless Function (Translation)
+├── lib/
+│   ├── env.js                  # Runtime environment reader
+│   ├── proxy-handler.js        # Dual-tier auth, transcript & translate handler
+│   ├── transcript.js           # Instant YouTube caption extractor
+│   └── translator.js           # Universal multi-language translation engine
+├── src/
+│   ├── components/
+│   │   ├── ErrorBoundary.jsx   # Crash-resilient fallback boundary
+│   │   ├── ShortcutsModal.jsx  # Interactive shortcut cheat-sheet
+│   │   └── Toast.jsx           # Animated floating notifications
+│   ├── lib/
+│   │   ├── localHistory.js     # Collision-free LocalStorage engine
+│   │   └── supabaseClient.js   # Cloud Supabase client with health probes
+│   ├── App.jsx                 # Core product studio application
+│   ├── main.jsx                # Application entrypoint
+│   └── styles.css              # Custom property design system (Dark & Light)
+├── public/
+│   ├── icon.svg                # Scalable brand vector icon
+│   └── manifest.json           # Web app manifest for PWA installation
+└── tests/
+    ├── app-component.test.jsx  # Component UI integration tests
+    ├── app-helpers.test.jsx    # Helper functions & formatter tests
+    ├── product-features.test.jsx # Phase 2 product suite tests
+    └── proxy-handler.test.js   # Proxy routing & security tests
+```
+
+---
+
+## 📄 License
+
+MIT © [Pal Shah](https://github.com/palshah112007)

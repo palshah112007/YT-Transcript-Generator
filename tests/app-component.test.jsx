@@ -121,4 +121,27 @@ describe('App transcript result card', () => {
     expect(stamped[0].parts.join('')).toContain('[1:02] world');
     expect(URL.revokeObjectURL).toHaveBeenCalled();
   });
+
+  it('exports SRT subtitle format when Export .SRT is clicked', async () => {
+    render(<App />);
+    await generateTranscript();
+
+    const restoreSRT = captureNextBlob();
+    fireEvent.click(screen.getByRole('button', { name: /export \.srt/i }));
+    const srtBlob = restoreSRT();
+    expect(srtBlob).toHaveLength(1);
+    expect(srtBlob[0].parts.join('')).toContain('1\n00:00:00,000 --> 00:01:02,000\nHello');
+  });
+
+  it('detects video ID and shows video preview card', async () => {
+    render(<App />);
+    const input = screen.getByPlaceholderText('https://youtu.be/dQw4w9WgXcQ');
+    fireEvent.change(input, { target: { value: 'dQw4w9WgXcQ' } });
+
+    expect(screen.getByText(/YouTube Video ID: dQw4w9WgXcQ/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /watch on youtube/i })).toHaveAttribute(
+      'href',
+      'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+    );
+  });
 });

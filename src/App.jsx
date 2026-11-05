@@ -1,7 +1,23 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { supabase, isSupabaseConfigured, missingSupabaseEnvVars, pingSupabase } from './lib/supabaseClient.js';
+import {
+  getLocalHistory,
+  saveLocalHistoryEntry,
+  clearLocalHistory,
+  deleteLocalHistoryEntry,
+  makeLocalEntry,
+} from './lib/localHistory.js';
+import { ToastContainer } from './components/Toast.jsx';
+import { ShortcutsModal } from './components/ShortcutsModal.jsx';
+import { ErrorBoundary } from './components/ErrorBoundary.jsx';
 
 const OFFER_DURATION_DAYS = 7;
+
+const LANG_NAMES = {
+  en: 'English', hi: 'Hindi', es: 'Spanish', fr: 'French', de: 'German',
+  pt: 'Portuguese', it: 'Italian', ja: 'Japanese', ko: 'Korean',
+  zh: 'Chinese', ru: 'Russian', ar: 'Arabic', nl: 'Dutch', tr: 'Turkish',
+};
 
 function formatRelativeDate(date) {
   const diff = Math.max(0, Math.round((date - Date.now()) / 1000));
@@ -10,12 +26,109 @@ function formatRelativeDate(date) {
   return `${days}d ${hours}h`;
 }
 
+export function extractVideoId(value) {
+  if (!value || typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
+    return trimmed;
+  }
+  const withProtocol = trimmed.match(/^https?:\/\//i) ? trimmed : `https://${trimmed}`;
+  try {
+    const url = new URL(withProtocol);
+    const hostname = url.hostname.replace(/^www\./, '');
+    if (hostname === 'youtu.be') {
+      const id = url.pathname.slice(1);
+      return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : null;
+    }
+    if (hostname === 'youtube.com' || hostname === 'm.youtube.com') {
+      if (url.searchParams.has('v')) {
+        const id = url.searchParams.get('v') || '';
+        return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : null;
+      }
+      if (url.pathname.startsWith('/shorts/')) {
+        const id = url.pathname.split('/')[2] || '';
+        return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : null;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function formatSrtTimestamp(seconds) {
+  const totalMs = Math.max(0, Math.round(Number(seconds || 0) * 1000));
+  const ms = totalMs % 1000;
+  const totalSecs = Math.floor(totalMs / 1000);
+  const s = totalSecs % 60;
+  const totalMins = Math.floor(totalSecs / 60);
+  const m = totalMins % 60;
+  const h = Math.floor(totalMins / 60);
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
+}
+
+export function formatTranscriptAsSRT(item) {
+  if (!item) return '';
+  const segments = Array.isArray(item.transcript)
+    ? item.transcript
+    : Array.isArray(item.transcriptText)
+      ? item.transcriptText
+      : null;
+
+  if (!segments || segments.length === 0) {
+    const plain = transcriptTextFromItem(item);
+    if (!plain) return '';
+    return `1\n00:00:00,000 --> 00:00:05,000\n${plain}\n`;
+  }
+
+  return segments
+    .map((seg, index) => {
+      const start = Number(seg.start ?? seg.start_time ?? 0) || 0;
+      let dur = Number(seg.duration ?? seg.dur ?? 0) || 0;
+      if (dur <= 0) {
+        const next = segments[index + 1];
+        if (next && (next.start ?? next.start_time) !== undefined) {
+          const nextStart = Number(next.start ?? next.start_time) || 0;
+          dur = Math.max(0.5, nextStart - start);
+        } else {
+          dur = 3;
+        }
+      }
+      const end = start + dur;
+      return `${index + 1}\n${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(end)}\n${seg.text}`;
+    })
+    .join('\n\n') + '\n';
+}
+
+export function calculateTranscriptStats(text, item) {
+  const clean = (text || '').trim();
+  const wordCount = clean ? clean.split(/\s+/).filter(Boolean).length : 0;
+  const charCount = clean.length;
+  const readingTimeMin = Math.max(1, Math.ceil(wordCount / 200));
+
+  let totalDurationSec = 0;
+  const segments = Array.isArray(item?.transcript) ? item.transcript : null;
+  if (segments && segments.length > 0) {
+    const last = segments[segments.length - 1];
+    const lastStart = Number(last.start ?? last.start_time ?? 0) || 0;
+    const lastDur = Number(last.duration ?? 0) || 2;
+    totalDurationSec = Math.round(lastStart + lastDur);
+  }
+
+  return {
+    wordCount,
+    charCount,
+    readingTimeMin,
+    readingTimeStr: `${readingTimeMin} min read`,
+    durationStr: totalDurationSec > 0 ? formatTimestamp(totalDurationSec) : null,
+  };
+}
+
 // Pure helpers are exported for unit tests; exporting them has no effect on
 // app behavior.
 export function parseYoutubeUrl(value) {
   if (!value) return null;
   const trimmed = value.trim();
-  // Support a bare 11-character video ID.
   if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
     return `https://www.youtube.com/watch?v=${trimmed}`;
   }
@@ -39,7 +152,7 @@ export function parseYoutubeUrl(value) {
         return trimmed;
       }
     }
-  } catch (error) {
+  } catch {
     return null;
   }
   return null;
@@ -89,18 +202,14 @@ function buildTrialMetadata(user) {
   return { start, expires };
 }
 
-// Turn raw Supabase/fetch failures into actionable messages instead of
-// failing silently (e.g. a paused/deleted project fails at DNS level).
 function describeAuthError(error) {
   if (!error) return 'Something went wrong. Please try again.';
   if (error.message === 'Failed to fetch' || /fetch failed|networkerror|load failed/i.test(error.message ?? '')) {
-    return 'Cannot reach Supabase — the project may be paused or deleted. Restore it at supabase.com/dashboard or update VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY in .env.';
+    return 'Cannot reach Supabase — project may be paused. Restore it at supabase.com/dashboard.';
   }
   return error.message;
 }
 
-// Client-side signup validation. Runs before any network call so obvious
-// mistakes never hit Supabase. Returns '' when the fields are valid.
 const SIGNUP_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function validateSignupFields(emailValue, passwordValue) {
@@ -113,9 +222,6 @@ export function validateSignupFields(emailValue, passwordValue) {
   return '';
 }
 
-// Map Supabase signup failures to friendly messages. Raw error.message is
-// never shown to the user. Checks the structured error code first, then the
-// message text as a fallback for older auth server responses.
 export function mapSignupError(error) {
   const code = error?.code ?? '';
   const raw = error?.message ?? '';
@@ -131,15 +237,15 @@ export function mapSignupError(error) {
   ) {
     return 'That email address looks invalid. Please check it and try again.';
   }
+  if (/rate limit|over_email_send_rate_limit/i.test(raw) || code === 'over_email_send_rate_limit') {
+    return 'Email send rate limit reached on Supabase free tier.';
+  }
   if (raw === 'Failed to fetch' || /fetch failed|networkerror|load failed/i.test(raw)) {
-    return 'Cannot reach the signup service. Check your internet connection — the Supabase project may also be paused (restore it at supabase.com/dashboard).';
+    return 'Cannot reach the signup service. Check your internet connection or Supabase status.';
   }
   return 'Signup failed. Please try again in a moment.';
 }
 
-// Map Supabase login failures to friendly messages. "Invalid login
-// credentials" and "Email not confirmed" need distinct guidance, and the raw
-// error.message is never shown to the user.
 export function mapLoginError(error) {
   const code = error?.code ?? '';
   const raw = error?.message ?? '';
@@ -155,12 +261,10 @@ export function mapLoginError(error) {
   return 'Login failed. Please try again in a moment.';
 }
 
-// Map password-reset email failures. Only invalid-email and network issues
-// are realistically reachable; raw messages stay in the console, not the UI.
 function mapResetPasswordError(error) {
   const raw = error?.message ?? '';
   if (raw === 'Failed to fetch' || /fetch failed|networkerror|load failed/i.test(raw)) {
-    return 'Cannot reach Supabase — check your internet connection. The project may also be paused (restore it at supabase.com/dashboard).';
+    return 'Cannot reach Supabase — check your internet connection.';
   }
   if (/invalid|validation/i.test(raw)) {
     return 'That email address looks invalid. Please check it and try again.';
@@ -168,7 +272,7 @@ function mapResetPasswordError(error) {
   return 'Could not send the reset email. Please try again in a moment.';
 }
 
-export default function App() {
+export function AppContent() {
   const [session, setSession] = useState(null);
   const [user, setUser] = useState(null);
   const [email, setEmail] = useState('');
@@ -176,12 +280,15 @@ export default function App() {
   const [authMode, setAuthMode] = useState('login');
   const [showAuth, setShowAuth] = useState(false);
   const [authError, setAuthError] = useState('');
+  const [authErrorDetail, setAuthErrorDetail] = useState('');
+  const [authErrorHint, setAuthErrorHint] = useState('');
   const [dbStatus, setDbStatus] = useState(
     isSupabaseConfigured ? 'checking' : 'unconfigured'
   );
   const [showRestoreGuide, setShowRestoreGuide] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const [input, setInput] = useState('');
-  const [language, setLanguage] = useState('en');
+  const [language, setLanguage] = useState('auto');
   const [status, setStatus] = useState('Paste a YouTube link or ID to start.');
   const [loading, setLoading] = useState(false);
   const [transcript, setTranscript] = useState(null);
@@ -190,10 +297,103 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showTimestamps, setShowTimestamps] = useState(false);
   const [creditsUsed, setCreditsUsed] = useState(0);
+  const [historySearch, setHistorySearch] = useState('');
+  const [transcriptSearch, setTranscriptSearch] = useState('');
+  const [languageTab, setLanguageTab] = useState('active');
+  const [copied, setCopied] = useState(false);
+  const [toasts, setToasts] = useState([]);
+  const [translating, setTranslating] = useState(false);
+  const [translateProgress, setTranslateProgress] = useState(0);
+  const [translationCache, setTranslationCache] = useState({}); // { [lang]: { segments, text } }
+
+  const [theme, setTheme] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('transcriptlab_theme') || 'dark';
+    }
+    return 'dark';
+  });
+
+  const urlInputRef = useRef(null);
+
+  const addToast = useCallback((message, type = 'info', duration = 3500) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    setToasts((prev) => [...prev.slice(-3), { id, message, type, duration }]);
+  }, []);
+
+  const dismissToast = useCallback((id) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  // Sync theme changes with DOM and localStorage
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    try {
+      localStorage.setItem('transcriptlab_theme', theme);
+    } catch {}
+  }, [theme]);
+
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    addToast(`Switched to ${next} theme`, 'info', 2000);
+  };
 
   const trial = useMemo(() => buildTrialMetadata(user), [user]);
   const trialActive = trial ? trial.expires > new Date() : false;
   const trialCountdown = trial ? formatRelativeDate(trial.expires) : '7d 0h';
+
+  const detectedVideoId = useMemo(() => extractVideoId(input), [input]);
+  const transcriptStats = useMemo(() => {
+    if (!transcript?.item && !transcript?.text) return null;
+    return calculateTranscriptStats(transcript.text, transcript.item);
+  }, [transcript]);
+
+  const filteredHistory = useMemo(() => {
+    if (!historySearch.trim()) return history;
+    const q = historySearch.toLowerCase();
+    return history.filter(
+      (item) =>
+        (item.title && item.title.toLowerCase().includes(q)) ||
+        (item.youtube_url && item.youtube_url.toLowerCase().includes(q)) ||
+        (item.language && item.language.toLowerCase().includes(q))
+    );
+  }, [history, historySearch]);
+
+  const currentItem = useMemo(() => {
+    if (!transcript) return null;
+    if (languageTab === 'original' && transcript.item?.original_transcript) {
+      return {
+        ...transcript.item,
+        transcript: transcript.item.original_transcript,
+        transcript_text: transcript.item.original_transcript_text || transcript.text,
+      };
+    }
+    return transcript.item;
+  }, [transcript, languageTab]);
+
+  const displayedTranscriptText = useMemo(() => {
+    if (!transcript) return '';
+    const it = currentItem || transcript.item;
+    return showTimestamps
+      ? formatTranscriptWithTimestamps(it)
+      : (transcriptTextFromItem(it) || transcript.text || '');
+  }, [transcript, currentItem, showTimestamps]);
+
+  const transcriptSearchMatchCount = useMemo(() => {
+    if (!transcriptSearch.trim() || !displayedTranscriptText) return 0;
+    const escaped = transcriptSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped, 'gi');
+    const matches = displayedTranscriptText.match(regex);
+    return matches ? matches.length : 0;
+  }, [transcriptSearch, displayedTranscriptText]);
+
+  useEffect(() => {
+    if (!user) {
+      const local = getLocalHistory();
+      setHistory(local);
+      setCreditsUsed(local.length);
+    }
+  }, [user]);
 
   useEffect(() => {
     if (!isSupabaseConfigured) return;
@@ -210,8 +410,6 @@ export default function App() {
         setSession(session ?? null);
         setUser(session?.user ?? null);
       } catch (error) {
-        // Never leave an unhandled rejection on startup (e.g. corrupt cached
-        // session); the app just renders logged out.
         console.error('Session restore failed:', error?.message ?? error);
       }
     }
@@ -232,7 +430,7 @@ export default function App() {
     if (user) loadHistory(user.id);
   }, [user]);
 
-  // Connection status indicator: probe Supabase on mount and on window focus.
+  // Connection status indicator
   useEffect(() => {
     if (!isSupabaseConfigured) return;
     let cancelled = false;
@@ -251,6 +449,53 @@ export default function App() {
       clearInterval(interval);
     };
   }, []);
+
+  // Global Keyboard shortcuts listener
+  useEffect(() => {
+    function handleKeyDown(e) {
+      const isInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName);
+
+      // Esc closes open modals
+      if (e.key === 'Escape') {
+        setShowAuth(false);
+        setShowRestoreGuide(false);
+        setShowSettings(false);
+        setShowShortcuts(false);
+        setTranscriptSearch('');
+        return;
+      }
+
+      // Cmd/Ctrl + Enter triggers generation
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        handleGenerate();
+        return;
+      }
+
+      // Cmd/Ctrl + K focuses input
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        urlInputRef.current?.focus();
+        return;
+      }
+
+      // Cmd/Ctrl + Shift + C copies transcript
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        handleCopy();
+        return;
+      }
+
+      // ? opens shortcuts guide when not inside an input
+      if (e.key === '?' && !isInput) {
+        e.preventDefault();
+        setShowShortcuts((prev) => !prev);
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [input, language, session, transcript, showTimestamps]);
 
   async function loadHistory(userId) {
     if (!userId || !supabase) return;
@@ -277,23 +522,33 @@ export default function App() {
   }
 
   async function handleSignup() {
-    if (!supabase) {
-      setStatus('Signup is unavailable: Supabase is not configured.');
+    if (!supabase || !isSupabaseConfigured) {
+      const msg = 'Signup is unavailable: Supabase is not configured.';
+      const detail = `Missing environment variables in .env: ${missingSupabaseEnvVars.join(', ') || 'VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY'}`;
+      const hint = 'Copy .env.example to .env, paste your Supabase URL & anon key, then restart the dev server.';
+      setStatus(msg);
+      setAuthError(msg);
+      setAuthErrorDetail(detail);
+      setAuthErrorHint(hint);
+      addToast('Supabase is not configured yet', 'error');
       return;
     }
-    // Guard against double submit (button is also disabled while loading).
     if (loading) return;
 
-    // Client-side validation before calling Supabase.
     const validationError = validateSignupFields(email, password);
     if (validationError) {
       setStatus(validationError);
       setAuthError(validationError);
+      setAuthErrorDetail('Validation check failed: check email format and minimum 6 characters password.');
+      setAuthErrorHint('Enter a valid email (e.g. name@example.com) and a password with at least 6 characters.');
+      addToast(validationError, 'warning');
       return;
     }
 
     setLoading(true);
     setAuthError('');
+    setAuthErrorDetail('');
+    setAuthErrorHint('');
     setStatus('Creating your account...');
     try {
       const { data, error } = await supabase.auth.signUp(
@@ -304,53 +559,102 @@ export default function App() {
         const message = mapSignupError(error);
         setStatus(message);
         setAuthError(message);
+        setAuthErrorDetail(error.message || error.code || 'Signup request failed');
+        if (error.code === 'user_already_exists' || /already/i.test(error.message || '')) {
+          setAuthErrorHint('Try logging in with this email instead, or click "Forgot password?" if you cannot remember your password.');
+        } else if (/rate limit|over_email_send_rate_limit/i.test(error.message || '')) {
+          setAuthErrorHint('Supabase free tier limits confirmation emails to ~3 per hour. To fix this immediately: In Supabase Dashboard -> Authentication -> Providers -> Email -> toggle OFF "Confirm email", then click Create account again for instant login!');
+        } else if (/network|fetch/i.test(error.message || '')) {
+          setAuthErrorHint('Check your internet connection and verify that your Supabase project is active (not paused) in your dashboard.');
+        } else {
+          setAuthErrorHint('Verify your Supabase project settings and make sure Email Auth is enabled under Authentication -> Providers.');
+        }
+        addToast(message, 'error');
         return;
       }
       if (!data?.session) {
-        // Email confirmation is ON: there is no session until the user
-        // clicks the link in the email. Do NOT mark the user as logged in.
-        setStatus('Check your email to confirm your account, then log in.');
-        setAuthError('');
-        setAuthMode('login');
+        const msg = 'Check your email to confirm your account, then log in.';
+        setStatus(msg);
+        addToast(msg, 'info', 6000);
+        setAuthError('Email confirmation required');
+        setAuthErrorDetail('Supabase created the account, but requires email verification before logging in.');
+        setAuthErrorHint('Check your inbox (or spam) for the confirmation link. Tip: You can disable "Confirm email" in Supabase Dashboard -> Authentication -> Providers -> Email -> toggle off "Confirm email" to allow instant login.');
         return;
       }
-      // Email confirmation is OFF: signUp returned a session, so the user is
-      // already logged in — onAuthStateChange picks up the session.
       setStatus('Account created. You are logged in.');
+      addToast('Welcome to TranscriptLab! You are logged in.', 'success');
       setShowAuth(false);
+    } catch (err) {
+      const raw = err?.message || 'Unexpected signup failure';
+      setStatus(raw);
+      setAuthError('Unexpected error occurred during signup');
+      setAuthErrorDetail(raw);
+      setAuthErrorHint('Check the browser developer console for network details.');
+      addToast('Signup error occurred', 'error');
     } finally {
       setLoading(false);
     }
   }
 
   async function handleLogin() {
-    if (!supabase) {
-      setStatus('Login is unavailable: Supabase is not configured.');
+    if (!supabase || !isSupabaseConfigured) {
+      const msg = 'Login is unavailable: Supabase is not configured.';
+      const detail = `Missing environment variables in .env: ${missingSupabaseEnvVars.join(', ') || 'VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY'}`;
+      const hint = 'Add your VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file, then restart the server.';
+      setStatus(msg);
+      setAuthError(msg);
+      setAuthErrorDetail(detail);
+      setAuthErrorHint(hint);
+      addToast('Supabase is not configured yet', 'error');
       return;
     }
     if (loading) return;
     setLoading(true);
     setAuthError('');
+    setAuthErrorDetail('');
+    setAuthErrorHint('');
     setStatus('Signing you in...');
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
       if (error) {
         const message = mapLoginError(error);
         setStatus(message);
         setAuthError(message);
+        setAuthErrorDetail(error.message || error.code || 'Sign in rejected');
+        if (error.code === 'email_not_confirmed' || /email not confirmed/i.test(error.message || '')) {
+          setAuthErrorHint('Click the confirmation link sent to your email. (Or in Supabase Dashboard -> Authentication -> Users, find your user and click "Confirm email").');
+        } else if (error.code === 'invalid_credentials' || /invalid login/i.test(error.message || '')) {
+          setAuthErrorHint('Double-check your email and password. If you don\'t have an account yet, click "Need an account? Sign up" below.');
+        } else if (/network|fetch/i.test(error.message || '')) {
+          setAuthErrorHint('Could not reach Supabase. Check your internet connection or verify if your project is active at supabase.com/dashboard.');
+        } else {
+          setAuthErrorHint('Check that VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your .env are accurate.');
+        }
+        addToast(message, 'error');
         return;
       }
       await updateTrialMetadataIfNeeded();
       setStatus('Welcome back! Ready to generate transcripts.');
+      addToast('Welcome back! Ready to generate transcripts.', 'success');
       setShowAuth(false);
+    } catch (err) {
+      const raw = err?.message || 'Login failed';
+      setStatus(raw);
+      setAuthError('Unexpected error during login');
+      setAuthErrorDetail(raw);
+      addToast('Login error occurred', 'error');
     } finally {
       setLoading(false);
     }
   }
 
   async function handleForgotPassword() {
-    if (!supabase) {
-      setStatus('Password reset is unavailable: Supabase is not configured.');
+    if (!supabase || !isSupabaseConfigured) {
+      const msg = 'Password reset is unavailable: Supabase is not configured.';
+      setStatus(msg);
+      setAuthError(msg);
+      setAuthErrorDetail(`Missing environment variables: ${missingSupabaseEnvVars.join(', ')}`);
+      setAuthErrorHint('Configure Supabase in your .env file to enable password recovery.');
       return;
     }
     if (loading) return;
@@ -358,10 +662,15 @@ export default function App() {
       const message = 'Enter a valid email address (e.g. you@example.com).';
       setStatus(message);
       setAuthError(message);
+      setAuthErrorDetail('Email format is invalid');
+      setAuthErrorHint('Please check the spelling of your email address.');
+      addToast(message, 'warning');
       return;
     }
     setLoading(true);
     setAuthError('');
+    setAuthErrorDetail('');
+    setAuthErrorHint('');
     setStatus('Sending password reset email...');
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
@@ -371,10 +680,19 @@ export default function App() {
         const message = mapResetPasswordError(error);
         setStatus(message);
         setAuthError(message);
+        setAuthErrorDetail(error.message || 'Reset password request failed');
+        setAuthErrorHint('Make sure an account with this email exists in your Supabase project.');
+        addToast(message, 'error');
         return;
       }
       setStatus('Password reset email sent. Check your inbox for the link.');
+      addToast('Password reset link sent to your inbox.', 'info');
       setAuthMode('login');
+    } catch (err) {
+      const raw = err?.message || 'Password reset failed';
+      setStatus(raw);
+      setAuthError('Could not send password reset');
+      setAuthErrorDetail(raw);
     } finally {
       setLoading(false);
     }
@@ -388,35 +706,40 @@ export default function App() {
         console.error('Sign out failed:', error?.message ?? error);
       }
     }
-    // Clear all signed-in state (even if the server call failed) so the UI
-    // never shows stale history/credits from the previous account.
     setUser(null);
     setSession(null);
     setTranscript(null);
-    setHistory([]);
-    setCreditsUsed(0);
+    const local = getLocalHistory();
+    setHistory(local);
+    setCreditsUsed(local.length);
+    addToast('Logged out. Switched to guest mode.', 'info');
   }
 
   async function handleGenerate() {
     const url = parseYoutubeUrl(input);
     if (!url) {
-      setStatus('Enter a valid YouTube URL, ID, or shared link.');
+      const msg = 'Enter a valid YouTube URL, ID, or shared link.';
+      setStatus(msg);
+      addToast(msg, 'warning');
       return;
     }
-    if (!user && isSupabaseConfigured) {
-      setShowLoginPrompt(true);
-      setStatus('Your first generation is free, but you need to log in first.');
-      return;
+    if (user) {
+      await updateTrialMetadataIfNeeded();
     }
-    await updateTrialMetadataIfNeeded();
     setShowLoginPrompt(false);
     setLoading(true);
-    setStatus('Generating transcript from Apify... please wait.');
+    setTranslationCache({});
+    setLanguageTab('active');
+    setStatus('Fetching captions... please wait.');
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`;
+      }
       const response = await fetch('/api/apify-proxy', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, language }),
+        headers,
+        body: JSON.stringify({ url, language: 'auto' }),
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
@@ -431,56 +754,214 @@ export default function App() {
         );
       }
       const title = item.title || 'YouTube Transcript';
-      if (!supabase) {
+      const detectedLang = item.detected_language || item.language || 'auto';
+
+      if (!supabase || !user) {
+        const entry = makeLocalEntry({ url, title, transcriptText, language: detectedLang, item });
+        saveLocalHistoryEntry(entry);
+        const updated = getLocalHistory();
+        setHistory(updated);
+        setCreditsUsed(updated.length);
         setTranscript({ title, text: transcriptText, url, item });
-        setStatus('Transcript generated (guest mode — history needs Supabase login).');
-        return;
+        setStatus('Transcript ready! (guest mode)');
+        addToast('Transcript ready! Saved to local history.', 'success');
+      } else {
+        const { error: insertError } = await supabase.from('yt_transcripts').insert([
+          {
+            user_id: user.id,
+            youtube_url: url,
+            title,
+            transcript_text: transcriptText,
+            language: detectedLang,
+            metadata: item,
+            credits_used: 1,
+          },
+        ]);
+        if (insertError) {
+          console.error('History save failed:', insertError.message);
+        }
+        await loadHistory(user.id);
+        setTranscript({ title, text: transcriptText, url, item });
+        setStatus('Transcript generated successfully.');
+        addToast('Transcript generated and cloud synced!', 'success');
       }
-      const { error: insertError } = await supabase.from('yt_transcripts').insert([
-        {
-          user_id: user.id,
-          youtube_url: url,
-          title,
-          transcript_text: transcriptText,
-          language,
-          metadata: item,
-          credits_used: 1,
-        },
-      ]);
-      if (insertError) {
-        console.error('History save failed:', insertError.message);
-        setStatus('Transcript generated, but saving to history failed.');
+
+      // If user selected a specific language different from detected, auto-translate
+      if (
+        language &&
+        language !== 'auto' &&
+        detectedLang &&
+        !detectedLang.toLowerCase().startsWith(language.toLowerCase())
+      ) {
+        // Don't await — let it run in background while user sees original
+        handleTranslate(item, language, detectedLang);
       }
-      await loadHistory(user.id);
-      setTranscript({ title, text: transcriptText, url, item });
-      setStatus('Transcript generated successfully. Copy, edit, or share it now.');
     } catch (error) {
       console.error(error);
-      setStatus(error.message ?? 'Something went wrong while generating the transcript.');
+      const errMsg = error.message ?? 'Something went wrong while generating the transcript.';
+      setStatus(errMsg);
+      addToast(errMsg, 'error');
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleCopy() {
-    if (!transcript?.text) return;
-    await navigator.clipboard.writeText(transcript.text);
-    setStatus('Transcript copied to clipboard.');
+  /**
+   * Translate the current transcript's segments to targetLang.
+   * Runs as a background operation with progress updates.
+   */
+  async function handleTranslate(item, targetLang, sourceLang) {
+    if (!item?.transcript || !targetLang) return;
+    if (translating) return; // prevent double-trigger
+
+    // Check cache first
+    if (translationCache[targetLang]) {
+      applyTranslation(targetLang);
+      return;
+    }
+
+    setTranslating(true);
+    setTranslateProgress(0);
+    setStatus(`Translating to ${LANG_NAMES[targetLang] || targetLang.toUpperCase()}...`);
+    addToast(`Translating transcript... this may take a moment.`, 'info', 4000);
+
+    try {
+      const response = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          segments: item.transcript,
+          targetLang,
+          sourceLang: sourceLang || item.detected_language || item.language || 'auto',
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.message || 'Translation request failed');
+      }
+
+      const result = await response.json();
+      if (result.ok && result.segments) {
+        setTranslationCache((prev) => ({
+          ...prev,
+          [targetLang]: {
+            segments: result.segments,
+            text: result.transcript_text,
+          },
+        }));
+
+        // Update transcript with translated version
+        setTranscript((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            item: {
+              ...prev.item,
+              original_transcript: prev.item.transcript,
+              original_transcript_text: prev.item.transcript_text || prev.text,
+              original_language: prev.item.detected_language || prev.item.language,
+              transcript: result.segments,
+              transcript_text: result.transcript_text,
+              language: targetLang,
+            },
+            text: result.transcript_text,
+          };
+        });
+        setLanguageTab('active');
+        setStatus(`Translated to ${LANG_NAMES[targetLang] || targetLang.toUpperCase()} ✓`);
+        addToast(`Translation complete!`, 'success');
+      }
+    } catch (err) {
+      console.error('Translation failed:', err);
+      addToast(`Translation failed: ${err.message}`, 'error');
+      setStatus('Translation failed — showing original transcript.');
+    } finally {
+      setTranslating(false);
+      setTranslateProgress(0);
+    }
   }
 
-  function handleDownload() {
-    if (!transcript?.text) return;
-    const content = showTimestamps ? formatTranscriptWithTimestamps(transcript.item) : transcript.text;
-    const blob = new Blob([content], { type: 'text/plain' });
+  function applyTranslation(lang) {
+    const cached = translationCache[lang];
+    if (!cached) return;
+    setTranscript((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        item: {
+          ...prev.item,
+          original_transcript: prev.item.original_transcript || prev.item.transcript,
+          original_transcript_text: prev.item.original_transcript_text || prev.item.transcript_text || prev.text,
+          original_language: prev.item.original_language || prev.item.detected_language || prev.item.language,
+          transcript: cached.segments,
+          transcript_text: cached.text,
+          language: lang,
+        },
+        text: cached.text,
+      };
+    });
+    setLanguageTab('active');
+  }
+
+  async function handleCopy() {
+    if (!transcript) return;
+    const it = currentItem || transcript.item;
+    const content = showTimestamps
+      ? formatTranscriptWithTimestamps(it)
+      : (transcriptTextFromItem(it) || transcript.text || '');
+    if (!content) return;
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+      setStatus('Transcript copied to clipboard.');
+      addToast('Transcript copied to clipboard!', 'success');
+    } catch {
+      setStatus('Could not copy to clipboard.');
+      addToast('Could not copy to clipboard.', 'error');
+    }
+  }
+
+  function handleDownload(format = 'txt') {
+    if (!transcript) return;
+    const it = currentItem || transcript.item;
+    let content = '';
+    let mimeType = 'text/plain';
+    let ext = 'txt';
+
+    if (format === 'srt') {
+      content = formatTranscriptAsSRT(it);
+      mimeType = 'text/plain';
+      ext = 'srt';
+    } else if (format === 'json') {
+      const exportData = {
+        title: transcript.title,
+        url: transcript.url,
+        language: languageTab === 'original' ? (transcript.item?.original_language || language) : language,
+        text: transcriptTextFromItem(it) || transcript.text,
+        segments: it?.transcript || [],
+        exported_at: new Date().toISOString(),
+      };
+      content = JSON.stringify(exportData, null, 2);
+      mimeType = 'application/json';
+      ext = 'json';
+    } else {
+      content = showTimestamps ? formatTranscriptWithTimestamps(it) : (transcriptTextFromItem(it) || transcript.text || '');
+      ext = 'txt';
+    }
+
+    const blob = new Blob([content], { type: mimeType });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${transcript.title || 'transcript'}.txt`;
+    a.download = `${transcript.title || 'transcript'}.${ext}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    setStatus('Transcript downloaded.');
+    setStatus(`Transcript downloaded as .${ext}`);
+    addToast(`Downloaded as .${ext}`, 'success');
   }
 
   function handleSelectHistory(item) {
@@ -489,29 +970,96 @@ export default function App() {
       title: item.title || item.youtube_url,
       text: item.transcript_text || '',
       url: item.youtube_url,
-      item,
+      item: item.metadata || item,
     });
     setStatus('Loaded saved transcript from history.');
+    addToast('Loaded from history', 'info', 2000);
+  }
+
+  async function handleDeleteHistory(id, event) {
+    if (event) event.stopPropagation();
+    if (!user || !supabase) {
+      const updated = deleteLocalHistoryEntry(id);
+      setHistory(updated);
+      setCreditsUsed(updated.length);
+      setStatus('Deleted local transcript from history.');
+      addToast('Deleted from local storage', 'info');
+      return;
+    }
+    const { error } = await supabase
+      .from('yt_transcripts')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', user.id);
+    if (!error) {
+      await loadHistory(user.id);
+      setStatus('Deleted transcript from history.');
+      addToast('Deleted from cloud history', 'info');
+    }
+  }
+
+  async function handleClearAllHistory() {
+    if (!user || !supabase) {
+      clearLocalHistory();
+      setHistory([]);
+      setCreditsUsed(0);
+      setStatus('Local history cleared.');
+      addToast('All local history cleared', 'info');
+      return;
+    }
+    const { error } = await supabase
+      .from('yt_transcripts')
+      .delete()
+      .eq('user_id', user.id);
+    if (!error) {
+      setHistory([]);
+      setCreditsUsed(0);
+      setStatus('History cleared.');
+      addToast('All history cleared', 'info');
+    }
   }
 
   return (
-    <div className="app-shell">
-      {missingSupabaseEnvVars.length > 0 ? (
+    <div className="app-shell" data-theme={theme}>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
+      {missingSupabaseEnvVars.length > 0 && process.env.NODE_ENV === 'development' ? (
         <div className="env-warning" role="alert">
-          <strong>Configuration problem:</strong> missing environment{' '}
+          <strong>Developer notice:</strong> missing environment{' '}
           variable{missingSupabaseEnvVars.length > 1 ? 's' : ''}{' '}
-          <code>{missingSupabaseEnvVars.join(', ')}</code>. Login, history, and
-          credits are disabled (transcripts still generate). Copy{' '}
-          <code>.env.example</code> to <code>.env</code>, fill in the values,
-          and restart the dev server.
+          <code>{missingSupabaseEnvVars.join(', ')}</code>. Login and cloud sync are disabled
+          (local guest mode active).
         </div>
       ) : null}
+
       <header className="topbar">
         <div className="brand">
-          <strong>TranscriptLab</strong>
-          <span>Gen Z YouTube transcript studio</span>
+          <div className="brand-logo-title">
+            <span className="brand-badge-icon">🎬</span>
+            <strong>TranscriptLab</strong>
+            <span className="version-pill">PRO</span>
+          </div>
+          <span className="brand-tagline">Professional YouTube Transcript &amp; Subtitle Studio</span>
         </div>
         <div className="top-actions">
+          <button
+            className="theme-toggle-btn"
+            onClick={toggleTheme}
+            title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            aria-label="Toggle theme"
+          >
+            {theme === 'dark' ? '☀️' : '🌙'}
+          </button>
+
+          <button
+            className="keyboard-shortcut-trigger-btn"
+            onClick={() => setShowShortcuts(true)}
+            title="Keyboard shortcuts (?)"
+            aria-label="Keyboard shortcuts"
+          >
+            ⌨ <span className="desktop-only-text">Shortcuts</span>
+          </button>
+
           <span
             className={`db-status db-${dbStatus}`}
             role={dbStatus === 'offline' ? 'button' : undefined}
@@ -519,15 +1067,17 @@ export default function App() {
             title={
               dbStatus === 'online' ? 'Supabase connected' :
               dbStatus === 'offline' ? 'Supabase unreachable — click for restore guide' :
-              dbStatus === 'checking' ? 'Checking Supabase connection...' :
-              'Supabase not configured — guest mode'
+              dbStatus === 'checking' ? 'Checking connection...' :
+              'Guest mode active — local storage'
             }>
             <span className="db-dot" />
-            {dbStatus === 'online' ? 'Supabase: Online' :
-             dbStatus === 'offline' ? 'Supabase: Offline' :
-             dbStatus === 'checking' ? 'Supabase: Checking' : 'Supabase: Not set up'}
+            {dbStatus === 'online' ? 'Cloud: Online' :
+             dbStatus === 'offline' ? 'Cloud: Offline' :
+             dbStatus === 'checking' ? 'Connecting...' : 'Guest Mode'}
           </span>
-          <span className="promo-chip">7-day unlimited launch offer</span>
+
+          <span className="promo-chip">⚡ Free &amp; Unlimited</span>
+
           {user ? (
             <>
               <button className="secondary-btn" onClick={() => setShowSettings(true)}>
@@ -551,26 +1101,26 @@ export default function App() {
       <main className="page-grid">
         <section className="hero-card">
           <div>
-            <p className="eyebrow">Modern. Fast. Supabase-powered.</p>
-            <h1>Create transcripts from any YouTube URL in seconds.</h1>
+            <p className="eyebrow">Enterprise-Grade Video Transcription Studio</p>
+            <h1>Extract Clean YouTube Transcripts &amp; Subtitles Instantly.</h1>
             <p className="hero-copy">
-              Paste a YouTube video link or ID, sign in, and generate clean transcript
-              output powered by Apify. Your account keeps history, credits, and billing
-              info in Supabase.
+              Convert any YouTube video into readable text, SubRip (.SRT) captions, or JSON data.
+              Includes automatic language support, video timestamps, reading time analytics,
+              and seamless privacy-first local storage.
             </p>
           </div>
           <div className="hero-info">
             <div>
-              <span>First generation</span>
-              <strong>Free for logged-in users</strong>
+              <span>Accessibility</span>
+              <strong>100% Free Guest Mode</strong>
             </div>
             <div>
-              <span>Offer expires in</span>
-              <strong>{trialActive ? trialCountdown : 'Soon'}</strong>
+              <span>Export Ready</span>
+              <strong>TXT, SRT, JSON</strong>
             </div>
             <div>
-              <span>Auth</span>
-              <strong>Supabase email/password</strong>
+              <span>Smart Search</span>
+              <strong>Instant Keyword Filter</strong>
             </div>
           </div>
         </section>
@@ -578,53 +1128,137 @@ export default function App() {
         <section className="generator-card">
           <div className="card-header">
             <div>
-              <p className="eyebrow">YouTube transcript</p>
+              <p className="eyebrow">Instant Extraction</p>
               <h2>Paste the video link or ID</h2>
             </div>
-            <div className="status-pill">{loading ? 'Working...' : 'Ready'}</div>
+            <div className={`status-pill ${loading ? 'status-pill-loading' : ''}`}>
+              {loading ? 'Transcribing...' : 'Ready'}
+            </div>
           </div>
 
           <div className="form-grid">
             <label className="input-group">
-              <span>Video URL or ID</span>
+              <span>Video URL or ID <kbd className="hint-kbd">⌘K</kbd></span>
               <input
+                ref={urlInputRef}
                 value={input}
                 onChange={(event) => {
                   setInput(event.target.value);
-                  if (!user) setShowLoginPrompt(true);
+                  if (!user && event.target.value.length > 5) setShowLoginPrompt(true);
                 }}
                 placeholder="https://youtu.be/dQw4w9WgXcQ"
               />
             </label>
 
             <label className="input-group">
-              <span>Language</span>
-              <select value={language} onChange={(event) => setLanguage(event.target.value)}>
+              <span>Translate to</span>
+              <select value={language} onChange={(event) => {
+                const newLang = event.target.value;
+                setLanguage(newLang);
+                // If we already have a transcript, trigger translation
+                if (transcript?.item && newLang !== 'auto') {
+                  const detLang = transcript.item.detected_language || transcript.item.original_language || transcript.item.language;
+                  if (detLang && !detLang.toLowerCase().startsWith(newLang.toLowerCase())) {
+                    handleTranslate(transcript.item.original_transcript ? { ...transcript.item, transcript: transcript.item.original_transcript } : transcript.item, newLang, detLang);
+                  }
+                } else if (newLang === 'auto' && transcript?.item?.original_transcript) {
+                  // Revert to original
+                  setTranscript((prev) => {
+                    if (!prev?.item?.original_transcript) return prev;
+                    return {
+                      ...prev,
+                      item: {
+                        ...prev.item,
+                        transcript: prev.item.original_transcript,
+                        transcript_text: prev.item.original_transcript_text || prev.text,
+                        language: prev.item.original_language || prev.item.detected_language,
+                      },
+                      text: prev.item.original_transcript_text || prev.text,
+                    };
+                  });
+                  setLanguageTab('active');
+                  addToast('Showing original transcript', 'info', 2000);
+                }
+              }}>
+                <option value="auto">Original Language (No Translation)</option>
                 <option value="en">English</option>
-                <option value="hi">Hindi</option>
-                <option value="es">Spanish</option>
-                <option value="fr">French</option>
-                <option value="auto">Auto-detect</option>
+                <option value="hi">Hindi (हिन्दी)</option>
+                <option value="es">Spanish (Español)</option>
+                <option value="fr">French (Français)</option>
+                <option value="de">German (Deutsch)</option>
+                <option value="pt">Portuguese (Português)</option>
+                <option value="it">Italian (Italiano)</option>
+                <option value="ja">Japanese (日本語)</option>
+                <option value="ko">Korean (한국어)</option>
+                <option value="zh">Chinese (中文)</option>
+                <option value="ru">Russian (Русский)</option>
+                <option value="ar">Arabic (العربية)</option>
+                <option value="nl">Dutch (Nederlands)</option>
+                <option value="tr">Turkish (Türkçe)</option>
               </select>
             </label>
           </div>
 
+          {detectedVideoId ? (
+            <div className="video-preview-box">
+              <img
+                src={`https://img.youtube.com/vi/${detectedVideoId}/mqdefault.jpg`}
+                alt="Video thumbnail"
+                className="video-thumb"
+              />
+              <div className="video-thumb-details">
+                <span className="video-id-tag">YouTube Video ID: {detectedVideoId}</span>
+                <a
+                  href={`https://www.youtube.com/watch?v=${detectedVideoId}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="video-watch-link"
+                >
+                  Watch on YouTube ↗
+                </a>
+              </div>
+            </div>
+          ) : null}
+
           {showLoginPrompt && !user ? (
             <div className="alert-card">
-              <strong>Your first generation is free</strong>
-              <p>Log in or sign up to unlock generation, transcript history, and account credits.</p>
+              <strong>Free Guest Mode Active</strong>
+              <p>You can generate transcripts right away! Sign in or create an account if you want cloud backup, sync across devices, and Apify fallback.</p>
               <button className="primary-btn" onClick={() => setShowAuth(true)}>
                 Login / Signup
               </button>
             </div>
           ) : null}
 
-          <button className="generate-btn" onClick={handleGenerate} disabled={loading}>
-            {loading ? 'Generating...' : 'Generate Transcript'}
+          <button
+            className="generate-btn"
+            onClick={handleGenerate}
+            disabled={loading}
+          >
+            {loading ? (
+              <span className="loading-btn-content">
+                <span className="spinner-dots" />
+                Generating...
+              </span>
+            ) : (
+              'Generate Transcript'
+            )}
           </button>
 
           <p className="status-text">{status}</p>
         </section>
+
+        {loading ? (
+          <section className="result-card skeleton-card" aria-label="Loading transcript preview">
+            <div className="skeleton-line skeleton-title" />
+            <div className="skeleton-pills-row">
+              <div className="skeleton-pill" />
+              <div className="skeleton-pill" />
+              <div className="skeleton-pill" />
+            </div>
+            <div className="skeleton-box" />
+          </section>
+        ) : null}
 
         {transcript ? (
           <section className="result-card">
@@ -632,6 +1266,31 @@ export default function App() {
               <div>
                 <p className="eyebrow">Transcript output</p>
                 <h3>{transcript.title}</h3>
+                {translating ? (
+                  <div className="translate-progress-bar">
+                    <span className="spinner-dots" /> Translating to {LANG_NAMES[language] || language}...
+                  </div>
+                ) : null}
+                {transcript.item?.original_language &&
+                transcript.item?.original_transcript &&
+                transcript.item?.original_language !== transcript.item?.language ? (
+                  <div className="lang-switcher-row">
+                    <button
+                      type="button"
+                      className={`lang-tab-pill ${languageTab === 'active' ? 'active' : ''}`}
+                      onClick={() => setLanguageTab('active')}
+                    >
+                      🌐 {LANG_NAMES[transcript.item?.language] || transcript.item?.language?.toUpperCase()} (Translated)
+                    </button>
+                    <button
+                      type="button"
+                      className={`lang-tab-pill ${languageTab === 'original' ? 'active' : ''}`}
+                      onClick={() => setLanguageTab('original')}
+                    >
+                      Original ({LANG_NAMES[transcript.item?.original_language] || transcript.item?.original_language?.toUpperCase()})
+                    </button>
+                  </div>
+                ) : null}
               </div>
               <div className="result-actions">
                 <label className="toggle-group">
@@ -642,18 +1301,52 @@ export default function App() {
                   />
                   <span>Show timestamps</span>
                 </label>
-                <button className="secondary-btn" onClick={handleDownload}>
+                <button className="secondary-btn" onClick={() => handleDownload('txt')}>
                   Download
                 </button>
-                <button className="secondary-btn" onClick={handleCopy}>
-                  Copy Transcript
+                <button className="secondary-btn export-srt-btn" onClick={() => handleDownload('srt')}>
+                  Export .SRT
+                </button>
+                <button className="ghost-btn export-json-btn" onClick={() => handleDownload('json')}>
+                  .JSON
+                </button>
+                <button className={`secondary-btn copy-btn ${copied ? 'copied-active' : ''}`} onClick={handleCopy}>
+                  {copied ? '✓ Copied!' : 'Copy Transcript'}
                 </button>
               </div>
             </div>
+
+            {transcriptStats ? (
+              <div className="transcript-stats-bar">
+                <span className="stat-pill"><strong>{transcriptStats.wordCount.toLocaleString()}</strong> words</span>
+                <span className="stat-pill"><strong>{transcriptStats.readingTimeStr}</strong></span>
+                <span className="stat-pill"><strong>{transcriptStats.charCount.toLocaleString()}</strong> chars</span>
+                {transcriptStats.durationStr ? (
+                  <span className="stat-pill">Duration: <strong>{transcriptStats.durationStr}</strong></span>
+                ) : null}
+              </div>
+            ) : null}
+
+            <div className="transcript-search-bar">
+              <span className="search-icon">🔍</span>
+              <input
+                type="text"
+                className="transcript-search-input"
+                placeholder="Search within this transcript..."
+                value={transcriptSearch}
+                onChange={(e) => setTranscriptSearch(e.target.value)}
+              />
+              {transcriptSearch ? (
+                <span className="search-match-badge">
+                  {transcriptSearchMatchCount} {transcriptSearchMatchCount === 1 ? 'match' : 'matches'}
+                </span>
+              ) : null}
+            </div>
+
             <textarea
               className="transcript-box"
               readOnly
-              value={showTimestamps ? formatTranscriptWithTimestamps(transcript.item) : transcript.text || ''}
+              value={displayedTranscriptText}
             />
           </section>
         ) : null}
@@ -664,21 +1357,52 @@ export default function App() {
               <p className="eyebrow">History</p>
               <h3>Recent transcript jobs</h3>
             </div>
-            {user ? null : <span className="small-text">Login to save history.</span>}
+            <div className="history-actions">
+              {user ? (
+                <span className="cloud-badge" title="Saved to Supabase database">☁️ Cloud Synced</span>
+              ) : (
+                <span className="local-badge" title="Saved to local browser storage">💾 Browser Storage</span>
+              )}
+              {history.length > 0 ? (
+                <button className="ghost-btn clear-btn" onClick={handleClearAllHistory}>
+                  Clear all
+                </button>
+              ) : null}
+            </div>
           </div>
-          {history.length === 0 ? (
+          {history.length > 0 ? (
+            <div className="history-filter-wrap">
+              <input
+                type="text"
+                className="history-search-input"
+                placeholder="Filter history by title, URL, or language..."
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+              />
+            </div>
+          ) : null}
+          {filteredHistory.length === 0 ? (
             <div className="history-empty">
-              <p>No transcripts saved yet.</p>
+              <p>{history.length === 0 ? 'No transcripts saved yet.' : 'No matching transcripts found.'}</p>
             </div>
           ) : (
             <ul className="history-list">
-              {history.map((item) => (
+              {filteredHistory.map((item) => (
                 <li key={item.id} onClick={() => handleSelectHistory(item)}>
-                  <div>
+                  <div className="history-info">
                     <strong>{item.title || item.youtube_url}</strong>
                     <span>{new Date(item.created_at).toLocaleString()}</span>
                   </div>
-                  <div>{item.language?.toUpperCase() || 'EN'}</div>
+                  <div className="history-item-actions">
+                    <span className="lang-tag">{item.language?.toUpperCase() || 'EN'}</span>
+                    <button
+                      className="delete-item-btn"
+                      title="Delete item"
+                      onClick={(e) => handleDeleteHistory(item.id, e)}
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -713,9 +1437,28 @@ export default function App() {
         ) : null}
       </main>
 
+      <footer className="product-footer">
+        <div className="footer-content">
+          <div className="footer-left">
+            <strong>TranscriptLab Studio</strong>
+            <span>Privacy-first • Zero cookies tracking • Instant export</span>
+          </div>
+          <div className="footer-center">
+            <button className="footer-shortcut-btn" onClick={() => setShowShortcuts(true)}>
+              ⌨ Keyboard Shortcuts <kbd>?</kbd>
+            </button>
+          </div>
+          <div className="footer-right">
+            <span className="footer-version">v2.1.0 Production</span>
+          </div>
+        </div>
+      </footer>
+
+      <ShortcutsModal isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
+
       {showAuth ? (
-        <div className="modal-overlay">
-          <div className="modal-card">
+        <div className="modal-overlay" onClick={() => setShowAuth(false)}>
+          <div className="modal-card auth-modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <p className="eyebrow">
@@ -727,22 +1470,84 @@ export default function App() {
               </div>
               <button className="ghost-btn" onClick={() => {
                 setAuthError('');
+                setAuthErrorDetail('');
+                setAuthErrorHint('');
                 setShowAuth(false);
               }}>
                 Close
               </button>
             </div>
 
+            {!isSupabaseConfigured ? (
+              <div className="auth-unconfigured-banner" role="alert">
+                <div className="auth-banner-header">
+                  <span className="auth-banner-icon">⚙️</span>
+                  <strong>Supabase Setup Needed</strong>
+                </div>
+                <p>
+                  To use Login, Signup, and Cloud Sync, Supabase credentials must be added to your <code>.env</code> file.
+                </p>
+                <div className="env-status-tags">
+                  <span className="env-status-tag tag-missing">VITE_SUPABASE_URL: Not set</span>
+                  <span className="env-status-tag tag-missing">VITE_SUPABASE_ANON_KEY: Not set</span>
+                </div>
+                <button
+                  type="button"
+                  className="setup-guide-link-btn"
+                  onClick={() => setShowRestoreGuide(true)}
+                >
+                  📖 View Step-by-Step Supabase Setup Guide →
+                </button>
+              </div>
+            ) : null}
+
             <label className="input-group">
               <span>Email</span>
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  setAuthError('');
+                }}
+                placeholder="you@example.com"
+              />
             </label>
             {authMode !== 'forgot' ? (
               <label className="input-group">
                 <span>Password</span>
-                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter a strong password" />
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    setAuthError('');
+                  }}
+                  placeholder="Enter a strong password (min 6 chars)"
+                />
               </label>
             ) : null}
+
+            {authError ? (
+              <div className="auth-error-card" role="alert">
+                <div className="auth-error-title-row">
+                  <span className="auth-error-icon">⚠️</span>
+                  <strong className="auth-error-title">{authError}</strong>
+                </div>
+                {authErrorDetail && authErrorDetail !== authError ? (
+                  <div className="auth-error-detail-box">
+                    <span className="detail-label">Details:</span>
+                    <code>{authErrorDetail}</code>
+                  </div>
+                ) : null}
+                {authErrorHint ? (
+                  <p className="auth-error-hint">
+                    💡 <strong>Solution:</strong> {authErrorHint}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
             <button
               className="primary-btn"
               onClick={
@@ -752,13 +1557,21 @@ export default function App() {
                     ? handleSignup
                     : handleForgotPassword
               }
-              disabled={loading || !isSupabaseConfigured}
+              disabled={loading}
             >
-              {authMode === 'login' ? 'Login' : authMode === 'signup' ? 'Create account' : 'Send reset link'}
+              {loading
+                ? 'Processing...'
+                : authMode === 'login'
+                  ? 'Login'
+                  : authMode === 'signup'
+                    ? 'Create account'
+                    : 'Send reset link'}
             </button>
             {authMode === 'login' ? (
               <button className="ghost-btn" onClick={() => {
                 setAuthError('');
+                setAuthErrorDetail('');
+                setAuthErrorHint('');
                 setAuthMode('forgot');
               }}>
                 Forgot password?
@@ -767,6 +1580,8 @@ export default function App() {
             {authMode !== 'forgot' ? (
               <button className="secondary-btn" onClick={() => {
                 setAuthError('');
+                setAuthErrorDetail('');
+                setAuthErrorHint('');
                 setAuthMode(authMode === 'login' ? 'signup' : 'login');
               }}>
                 {authMode === 'login' ? 'Need an account? Sign up' : 'Already have an account? Log in'}
@@ -774,64 +1589,79 @@ export default function App() {
             ) : (
               <button className="secondary-btn" onClick={() => {
                 setAuthError('');
+                setAuthErrorDetail('');
+                setAuthErrorHint('');
                 setAuthMode('login');
               }}>
                 Back to log in
               </button>
             )}
-            {authError ? <p className="auth-error" role="alert">{authError}</p> : null}
-            <p className="small-text">Your credentials are stored securely in Supabase.</p>
+            <p className="small-text">
+              {isSupabaseConfigured
+                ? 'Credentials are encrypted and authenticated via Supabase.'
+                : 'Tip: You can use the app without login — transcripts save to browser storage!'}
+            </p>
           </div>
         </div>
       ) : null}
 
       {showRestoreGuide ? (
-        <div className="modal-overlay">
-          <div className="modal-card">
+        <div className="modal-overlay" onClick={() => setShowRestoreGuide(false)}>
+          <div className="modal-card guide-modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <p className="eyebrow">Connection problem</p>
-                <h2>Restore your Supabase project</h2>
+                <p className="eyebrow">Supabase Integration Guide</p>
+                <h2>Setup &amp; Connection Guide</h2>
               </div>
               <button className="ghost-btn" onClick={() => setShowRestoreGuide(false)}>
                 Close
               </button>
             </div>
             <p className="hero-copy">
-              The app cannot reach your Supabase project. Free projects pause after about a week of
-              inactivity and are deleted after roughly 90 days. Login, history, and credits need it —
-              transcript generation still works without it.
+              Follow these simple steps to connect Supabase database &amp; auth to TranscriptLab:
             </p>
             <ol className="guide-list">
               <li>
-                Open the{' '}
+                <strong>Create a free Supabase Project</strong>: Open{' '}
                 <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer">
-                  Supabase dashboard
+                  supabase.com/dashboard
                 </a>{' '}
-                and find your project.
+                and click <em>New project</em>.
               </li>
               <li>
-                If it shows <strong>Restore</strong>, click it — the project is back in a few minutes.
+                <strong>Copy API Keys</strong>: In your Supabase Dashboard, navigate to{' '}
+                <strong>Project Settings → API</strong>. Copy your <strong>Project URL</strong> and{' '}
+                <strong>anon public key</strong>.
               </li>
               <li>
-                If it was deleted, create a new project and copy the new <strong>Project URL</strong> and{' '}
-                <strong>anon key</strong> from Settings → API into your <code>.env</code> file.
+                <strong>Paste in <code>.env</code> file</strong>: Open the <code>.env</code> file in this project root and add:
+                <pre className="code-snippet-box">
+{`VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=eyJhbGciOi...`}
+                </pre>
               </li>
               <li>
-                Run <code>supabase/init.sql</code> in the SQL Editor (idempotent — safe to re-run).
+                <strong>Create Database Tables</strong>: Open <strong>SQL Editor</strong> in Supabase, paste all contents of{' '}
+                <code>supabase/init.sql</code>, and click <strong>Run</strong> (creates <code>yt_transcripts</code> table and security policies).
               </li>
               <li>
-                Restart the dev server — this indicator turns green automatically once the project is
-                reachable.
+                <strong>(Optional) Instant Login without Email Confirmation</strong>: In Supabase, go to{' '}
+                <strong>Authentication → Providers → Email</strong> and toggle OFF <em>Confirm email</em> if you want immediate logins without email verification links.
+              </li>
+              <li>
+                <strong>Restart Dev Server</strong>: In terminal, press <code>Ctrl+C</code> and run <code>npm run dev</code>. The indicator will turn green: <strong>Cloud: Online</strong>!
               </li>
             </ol>
+            <button className="primary-btn" onClick={() => setShowRestoreGuide(false)}>
+              Got it, thanks!
+            </button>
           </div>
         </div>
       ) : null}
 
       {showSettings ? (
-        <div className="modal-overlay">
-          <div className="modal-card">
+        <div className="modal-overlay" onClick={() => setShowSettings(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <p className="eyebrow">Account settings</p>
@@ -869,5 +1699,13 @@ export default function App() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
   );
 }
