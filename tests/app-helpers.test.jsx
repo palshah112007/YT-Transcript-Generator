@@ -305,4 +305,10 @@ describe('localHistory module', () => {
     clearLocalHistory();
     expect(getLocalHistory()).toEqual([]);
   });
+
+  it('handles edge-case empty and whitespace input safely', () => {
+    expect(parseYoutubeUrl('')).toBeNull();
+    expect(parseYoutubeUrl('   ')).toBeNull();
+    expect(extractVideoId('')).toBeNull();
+  });
 });
