@@ -1,5 +1,9 @@
 import React, { useEffect } from 'react';
 
+/**
+ * ToastContainer renders floating animated toast pills with auto-dismiss timers.
+ * Accessible with role="region" and aria-live="polite".
+ */
 export function ToastContainer({ toasts, onDismiss }) {
   if (!toasts || toasts.length === 0) return null;
 
