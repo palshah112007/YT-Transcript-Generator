@@ -23,6 +23,10 @@ function writeAll(items) {
   }
 }
 
+/**
+ * Retrieves the local transcript history array stored in the client browser.
+ * @returns {Array<Object>} List of history entries sorted descending by date
+ */
 export function getLocalHistory() {
   return readAll();
 }
