@@ -1,5 +1,9 @@
 import React from 'react';
 
+/**
+ * ShortcutsModal displays platform-aware keyboard shortcut cheat-sheets.
+ * Dynamically switches between Command (⌘) on macOS and Ctrl on Windows/Linux.
+ */
 export function ShortcutsModal({ isOpen, onClose }) {
   if (!isOpen) return null;
 
