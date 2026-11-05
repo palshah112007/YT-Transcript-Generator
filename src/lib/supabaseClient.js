@@ -76,6 +76,11 @@ if (import.meta.env.DEV && isSupabaseConfigured) {
 // Lightweight reachability probe for the status indicator on the main page.
 // Hits the auth health endpoint directly (works even when the project is
 // paused/deleted — the fetch itself fails, which is exactly what we detect).
+/**
+ * Probes the Supabase project auth health endpoint with a configurable timeout.
+ * @param {number} [timeoutMs=8000] - Probe timeout in milliseconds
+ * @returns {Promise<'online'|'offline'|'unconfigured'>} Live connectivity state
+ */
 export async function pingSupabase(timeoutMs = 8000) {
   if (!isSupabaseConfigured) return 'unconfigured';
   try {
