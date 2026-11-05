@@ -1,3 +1,9 @@
+-- ============================================================================
+-- TranscriptLab Database Schema & Security Definition
+-- Version: 2.0 (PostgreSQL + Supabase RLS)
+-- Tables: yt_transcripts, profiles
+-- Functions: handle_new_user(), use_credit()
+-- ============================================================================
 -- Supabase setup for the YouTube Transcript Generator.
 -- Run this whole file once in: Supabase Dashboard -> SQL Editor -> New query.
 -- It is fully idempotent, so it is safe to run again (e.g. on a new project
