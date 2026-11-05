@@ -1,10 +1,13 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// Production project defaults (ensure instant login, signup, and cloud sync across all deployments)
+const DEFAULT_SUPABASE_URL = 'https://akpxypbtixvyepgabjhd.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_2UdAyhEEVhJIoS92TUTK6w_tg2KJOki';
 
-// Supabase is optional: without valid config the app runs in guest mode
-// (transcripts still generate; login/history/credits are disabled).
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_ANON_KEY;
+
+// Supabase is configured when URL and key are present
 export const isSupabaseConfigured = Boolean(
   supabaseUrl && supabaseAnonKey
 );
