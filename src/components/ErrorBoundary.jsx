@@ -1,5 +1,9 @@
 import React from 'react';
 
+/**
+ * Top-level ErrorBoundary that intercepts unhandled render exceptions,
+ * preventing full-page white screens and offering one-click recovery.
+ */
 export class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
