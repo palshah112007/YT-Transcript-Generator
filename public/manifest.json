@@ -4,6 +4,8 @@
   "description": "Extract, format, and export YouTube transcripts into TXT, SRT, and JSON with timestamps and multi-language support.",
   "start_url": "/",
   "display": "standalone",
+  "orientation": "portrait-primary",
+  "categories": ["utilities", "productivity", "video"],
   "background_color": "#090d16",
   "theme_color": "#4f46e5",
   "icons": [
