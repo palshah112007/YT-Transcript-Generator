@@ -1,7 +1,16 @@
 {
   "name": "youtube-transcript-generator",
+  "description": "High-performance YouTube transcript extraction and 14-language subtitle studio",
   "private": true,
   "version": "0.1.0",
+  "keywords": [
+    "youtube",
+    "transcript",
+    "subtitles",
+    "captions",
+    "translation",
+    "srt"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite",
