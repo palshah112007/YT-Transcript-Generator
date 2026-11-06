@@ -77,8 +77,11 @@ Visit `http://localhost:5173` to start transcribing videos!
 ## 🛠️ Production Build & Verification
 
 ```bash
-# Run unit and integration tests (60 tests)
+# Run unit and integration tests (91 tests)
 npm test
+
+# Verify all supported languages end-to-end
+npm run verify:langs
 
 # Build production bundle
 npm run build
@@ -112,9 +115,12 @@ To enable user accounts, multi-device synchronization, and cloud storage:
 │   └── translate.js            # Vercel Serverless Function (Translation)
 ├── lib/
 │   ├── env.js                  # Runtime environment reader
+│   ├── lang-check.js           # Offline script & stopword language verification
 │   ├── proxy-handler.js        # Dual-tier auth, transcript & translate handler
 │   ├── transcript.js           # Instant YouTube caption extractor
-│   └── translator.js           # Universal multi-language translation engine
+│   └── translator.js           # Universal multi-language translation engine (bisection)
+├── scripts/
+│   └── verify-languages.mjs    # End-to-end multi-language test CLI
 ├── src/
 │   ├── components/
 │   │   ├── ErrorBoundary.jsx   # Crash-resilient fallback boundary
@@ -132,15 +138,19 @@ To enable user accounts, multi-device synchronization, and cloud storage:
 └── tests/
     ├── app-component.test.jsx  # Component UI integration tests
     ├── app-helpers.test.jsx    # Helper functions & formatter tests
+    ├── lang-check.test.js      # Heuristic language detector tests
     ├── product-features.test.jsx # Phase 2 product suite tests
-    └── proxy-handler.test.js   # Proxy routing & security tests
+    ├── proxy-handler.test.js   # Proxy routing & security tests
+    ├── translation-flow.test.jsx # Translation UI flow & regression tests
+    ├── translator.test.js      # Bisection alignment & chunking tests
+    └── verify-languages.test.js# Harness test suite
 ```
 
 ---
 
 ## 🌐 Supported Translation Languages
 
-TranscriptLab natively supports translation between all major global languages:
+TranscriptLab supports high-accuracy translation between 8 curated global languages:
 
 - 🇬🇧 English (`en`)
 - 🇮🇳 Hindi (`hi`)
@@ -148,14 +158,8 @@ TranscriptLab natively supports translation between all major global languages:
 - 🇫🇷 French (`fr`)
 - 🇩🇪 German (`de`)
 - 🇯🇵 Japanese (`ja`)
-- 🇨🇳 Chinese (`zh`)
-- 🇸🇦 Arabic (`ar`)
 - 🇷🇺 Russian (`ru`)
-- 🇧🇷 Portuguese (`pt`)
-- 🇮🇹 Italian (`it`)
-- 🇰🇷 Korean (`ko`)
-- 🇳🇱 Dutch (`nl`)
-- 🇹🇷 Turkish (`tr`)
+- 🇸🇦 Arabic (`ar`)
 
 ---
 
