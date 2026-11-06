@@ -1,6 +1,6 @@
 {
   "name": "youtube-transcript-generator",
-  "description": "High-performance YouTube transcript extraction and 14-language subtitle studio",
+  "description": "High-performance YouTube transcript extraction and 8-language subtitle studio",
   "private": true,
   "version": "0.1.0",
   "keywords": [
@@ -16,7 +16,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "verify:langs": "node scripts/verify-languages.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.27.0",
