@@ -16,8 +16,7 @@ const WORDS_PER_MINUTE = 200;
 
 const LANG_NAMES = {
   en: 'English', hi: 'Hindi', es: 'Spanish', fr: 'French', de: 'German',
-  pt: 'Portuguese', it: 'Italian', ja: 'Japanese', ko: 'Korean',
-  zh: 'Chinese', ru: 'Russian', ar: 'Arabic', nl: 'Dutch', tr: 'Turkish',
+  ja: 'Japanese', ru: 'Russian', ar: 'Arabic',
 };
 
 function formatRelativeDate(date) {
@@ -318,6 +317,11 @@ export function AppContent() {
   });
 
   const urlInputRef = useRef(null);
+  // Translation request bookkeeping: only the latest request may update the UI.
+  const translateReq = useRef(0);
+  const translateAbort = useRef(null);
+  // The language the transcript is *actually* shown in ('auto' = original).
+  const shownLangRef = useRef('auto');
 
   const addToast = useCallback((message, type = 'info', duration = 3500) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -732,6 +736,8 @@ export function AppContent() {
     }
     setShowLoginPrompt(false);
     setLoading(true);
+    cancelTranslation();
+    shownLangRef.current = 'auto';
     setTranslationCache({});
     setLanguageTab('active');
     setStatus('Fetching captions... please wait.');
@@ -810,19 +816,66 @@ export function AppContent() {
     }
   }
 
+  function cancelTranslation() {
+    translateAbort.current?.abort();
+    translateAbort.current = null;
+    translateReq.current += 1;
+    setTranslating(false);
+  }
+
+  function revertToOriginal({ silent = false } = {}) {
+    cancelTranslation();
+    setTranscript((prev) => {
+      if (!prev?.item?.original_transcript) return prev;
+      return {
+        ...prev,
+        item: {
+          ...prev.item,
+          transcript: prev.item.original_transcript,
+          transcript_text: prev.item.original_transcript_text || prev.text,
+          language: prev.item.original_language || prev.item.detected_language,
+          translation_stats: undefined,
+          translation_verification: undefined,
+        },
+        text: prev.item.original_transcript_text || prev.text,
+      };
+    });
+    setLanguageTab('active');
+    if (!silent) addToast('Showing original transcript', 'info', 2000);
+  }
+
   /**
-   * Translate the current transcript's segments to targetLang.
-   * Runs as a background operation with progress updates.
+   * Translate the transcript to targetLang. Always translates from the ORIGINAL
+   * segments (never from an earlier translation) and only the latest request
+   * is allowed to update the UI, so the dropdown, the text and the label can
+   * never disagree.
    */
   async function handleTranslate(item, targetLang, sourceLang) {
-    if (!item?.transcript || !targetLang) return;
-    if (translating) return; // prevent double-trigger
+    if (!targetLang) return;
+    const sourceSegments = item?.original_transcript || item?.transcript;
+    const origLang =
+      item?.original_language || item?.detected_language || item?.language || sourceLang || 'auto';
+
+    if (!Array.isArray(sourceSegments) || sourceSegments.length === 0) {
+      addToast('This transcript has no timed segments, so it cannot be translated.', 'warning');
+      setStatus('Translation unavailable for this transcript — showing original.');
+      setLanguage(shownLangRef.current);
+      return;
+    }
 
     // Check cache first
     if (translationCache[targetLang]) {
+      cancelTranslation();
       applyTranslation(targetLang);
       return;
     }
+
+    // A newer request supersedes any in-flight one.
+    translateAbort.current?.abort();
+    const controller = new AbortController();
+    translateAbort.current = controller;
+    const reqId = ++translateReq.current;
+    const isLatest = () => reqId === translateReq.current;
 
     setTranslating(true);
     setTranslateProgress(0);
@@ -833,10 +886,11 @@ export function AppContent() {
       const response = await fetch('/api/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
-          segments: item.transcript,
+          segments: sourceSegments,
           targetLang,
-          sourceLang: sourceLang || item.detected_language || item.language || 'auto',
+          sourceLang: origLang,
         }),
       });
 
@@ -846,43 +900,66 @@ export function AppContent() {
       }
 
       const result = await response.json();
-      if (result.ok && result.segments) {
-        setTranslationCache((prev) => ({
-          ...prev,
-          [targetLang]: {
-            segments: result.segments,
-            text: result.transcript_text,
-          },
-        }));
+      if (!isLatest()) return; // user already picked another language
+      if (!(result.ok && Array.isArray(result.segments))) {
+        throw new Error('Translation service returned no text.');
+      }
 
-        // Update transcript with translated version
-        setTranscript((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            item: {
-              ...prev.item,
-              original_transcript: prev.item.transcript,
-              original_transcript_text: prev.item.transcript_text || prev.text,
-              original_language: prev.item.detected_language || prev.item.language,
-              transcript: result.segments,
-              transcript_text: result.transcript_text,
-              language: targetLang,
-            },
-            text: result.transcript_text,
-          };
-        });
-        setLanguageTab('active');
-        setStatus(`Translated to ${LANG_NAMES[targetLang] || targetLang.toUpperCase()} ✓`);
+      setTranslationCache((prev) => ({
+        ...prev,
+        [targetLang]: {
+          segments: result.segments,
+          text: result.transcript_text,
+          stats: result.stats,
+          verification: result.verification,
+        },
+      }));
+
+      setTranscript((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          item: {
+            ...prev.item,
+            // Keep the first (true original) copy; never overwrite it with a translation.
+            original_transcript: prev.item.original_transcript || prev.item.transcript,
+            original_transcript_text:
+              prev.item.original_transcript_text || prev.item.transcript_text || prev.text,
+            original_language:
+              prev.item.original_language || prev.item.detected_language || prev.item.language,
+            transcript: result.segments,
+            transcript_text: result.transcript_text,
+            language: targetLang,
+            translation_stats: result.stats,
+            translation_verification: result.verification,
+          },
+          text: result.transcript_text,
+        };
+      });
+      shownLangRef.current = targetLang;
+      setLanguageTab('active');
+
+      const name = LANG_NAMES[targetLang] || targetLang.toUpperCase();
+      const pct = result.stats ? Math.round(result.stats.ratio * 100) : 100;
+      if (result.verification && !result.verification.ok) {
+        setStatus(`Translated to ${name} (${pct}%), but some text may still be in ${result.verification.detected}.`);
+        addToast(`Translation to ${name} may be incomplete — check the output.`, 'warning', 5000);
+      } else {
+        setStatus(`Translated to ${name} ✓`);
         addToast(`Translation complete!`, 'success');
       }
     } catch (err) {
+      if (err?.name === 'AbortError' || !isLatest()) return;
       console.error('Translation failed:', err);
       addToast(`Translation failed: ${err.message}`, 'error');
-      setStatus('Translation failed — showing original transcript.');
+      setStatus('Translation failed — showing the previous transcript.');
+      // Make the dropdown reflect what is really on screen.
+      setLanguage(shownLangRef.current);
     } finally {
-      setTranslating(false);
-      setTranslateProgress(0);
+      if (isLatest()) {
+        setTranslating(false);
+        setTranslateProgress(0);
+      }
     }
   }
 
@@ -901,11 +978,32 @@ export function AppContent() {
           transcript: cached.segments,
           transcript_text: cached.text,
           language: lang,
+          translation_stats: cached.stats,
+          translation_verification: cached.verification,
         },
         text: cached.text,
       };
     });
+    shownLangRef.current = lang;
     setLanguageTab('active');
+  }
+
+  // Single entry point for the "Translate to" dropdown.
+  function handleLanguageChange(newLang) {
+    setLanguage(newLang);
+    const it = transcript?.item;
+    if (!it) return;
+    const origLang = (it.original_language || it.detected_language || it.language || '').toLowerCase();
+    const isOriginal =
+      newLang === 'auto' || (origLang !== '' && origLang.startsWith(newLang.toLowerCase()));
+    if (isOriginal) {
+      // Picking the video's own language (or "Original") must restore the original text.
+      shownLangRef.current = 'auto';
+      if (it.original_transcript) revertToOriginal();
+      else cancelTranslation();
+      return;
+    }
+    handleTranslate(it, newLang, origLang);
   }
 
   async function handleCopy() {
@@ -1156,49 +1254,16 @@ export function AppContent() {
 
             <label className="input-group">
               <span>Translate to</span>
-              <select value={language} onChange={(event) => {
-                const newLang = event.target.value;
-                setLanguage(newLang);
-                // If we already have a transcript, trigger translation
-                if (transcript?.item && newLang !== 'auto') {
-                  const detLang = transcript.item.detected_language || transcript.item.original_language || transcript.item.language;
-                  if (detLang && !detLang.toLowerCase().startsWith(newLang.toLowerCase())) {
-                    handleTranslate(transcript.item.original_transcript ? { ...transcript.item, transcript: transcript.item.original_transcript } : transcript.item, newLang, detLang);
-                  }
-                } else if (newLang === 'auto' && transcript?.item?.original_transcript) {
-                  // Revert to original
-                  setTranscript((prev) => {
-                    if (!prev?.item?.original_transcript) return prev;
-                    return {
-                      ...prev,
-                      item: {
-                        ...prev.item,
-                        transcript: prev.item.original_transcript,
-                        transcript_text: prev.item.original_transcript_text || prev.text,
-                        language: prev.item.original_language || prev.item.detected_language,
-                      },
-                      text: prev.item.original_transcript_text || prev.text,
-                    };
-                  });
-                  setLanguageTab('active');
-                  addToast('Showing original transcript', 'info', 2000);
-                }
-              }}>
+              <select value={language} onChange={(event) => handleLanguageChange(event.target.value)}>
                 <option value="auto">Original Language (No Translation)</option>
                 <option value="en">English</option>
                 <option value="hi">Hindi (हिन्दी)</option>
                 <option value="es">Spanish (Español)</option>
                 <option value="fr">French (Français)</option>
                 <option value="de">German (Deutsch)</option>
-                <option value="pt">Portuguese (Português)</option>
-                <option value="it">Italian (Italiano)</option>
                 <option value="ja">Japanese (日本語)</option>
-                <option value="ko">Korean (한국어)</option>
-                <option value="zh">Chinese (中文)</option>
                 <option value="ru">Russian (Русский)</option>
                 <option value="ar">Arabic (العربية)</option>
-                <option value="nl">Dutch (Nederlands)</option>
-                <option value="tr">Turkish (Türkçe)</option>
               </select>
             </label>
           </div>
@@ -1284,7 +1349,7 @@ export function AppContent() {
                       className={`lang-tab-pill ${languageTab === 'active' ? 'active' : ''}`}
                       onClick={() => setLanguageTab('active')}
                     >
-                      🌐 {LANG_NAMES[transcript.item?.language] || transcript.item?.language?.toUpperCase()} (Translated)
+                      🌐 {LANG_NAMES[transcript.item?.language] || transcript.item?.language?.toUpperCase()} (Translated){transcript.item?.translation_verification && !transcript.item.translation_verification.ok ? ' ⚠' : ''}
                     </button>
                     <button
                       type="button"
