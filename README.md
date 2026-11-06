@@ -4,12 +4,12 @@
 
 **Enterprise-Ready YouTube Video Transcription, Captioning & Multi-Language Studio**
 
-Extract clean, synchronized transcripts and subtitles from any YouTube URL or video ID in seconds with real-time translation into 14+ languages.
+Extract clean, synchronized transcripts and subtitles from any YouTube URL or video ID in seconds with high-accuracy translation into 8 essential languages.
 
 🌐 **Live Demo:** [https://yt-transcript-generator.vercel.app](https://yt-transcript-generator.vercel.app)
 
 [![Production Build](https://img.shields.io/badge/Build-Passing-emerald?style=for-the-badge&logo=vite)](https://github.com/palshah112007/YT-Transcript-Generator)
-[![Tests Passing](https://img.shields.io/badge/Tests-60%2F60%20Passing-indigo?style=for-the-badge&logo=vitest)](https://github.com/palshah112007/YT-Transcript-Generator)
+[![Tests Passing](https://img.shields.io/badge/Tests-91%2F91%20Passing-indigo?style=for-the-badge&logo=vitest)](https://github.com/palshah112007/YT-Transcript-Generator)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
 [![PWA Ready](https://img.shields.io/badge/PWA-Installable-purple?style=for-the-badge&logo=pwa)](https://github.com/palshah112007/YT-Transcript-Generator)
 
